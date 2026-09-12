@@ -33,8 +33,16 @@ HERE = Path(__file__).resolve().parent
 TEMPLATES = HERE / "templates"
 DEFAULT_AGENTS = ("claude", "codex")
 TYPES = (
-    "ping", "finding", "claim", "question", "handoff", "escalate",
-    "received", "reproduced", "disputed", "approved",
+    "ping",
+    "finding",
+    "claim",
+    "question",
+    "handoff",
+    "escalate",
+    "received",
+    "reproduced",
+    "disputed",
+    "approved",
 )
 REQUIRED = ("ts", "from", "type", "provenance")
 GIT = shutil.which("git") or "git"
@@ -42,12 +50,17 @@ GIT = shutil.which("git") or "git"
 
 # --------------------------------------------------------------------------- paths
 
+
 def find_root(start=None):
     """Project root: the git top level containing `start`, else `start` itself."""
     start = Path(start or os.environ.get("COLLAB_ROOT") or Path.cwd()).resolve()
     result = subprocess.run(  # noqa: S603 - fixed executable, no shell, literal args
         [GIT, "rev-parse", "--show-toplevel"],
-        cwd=start, capture_output=True, text=True, timeout=30, check=False,
+        cwd=start,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
         return Path(result.stdout.strip())
@@ -95,6 +108,7 @@ def _is_runtime_state(path, config):
 
 # ---------------------------------------------------------------------- provenance
 
+
 def _git(root, *args):
     """Run a fixed git subcommand. Fails closed.
 
@@ -120,7 +134,9 @@ def reviewed_snapshot(root, config):
     paths = set()
     paths.update(p for p in _git(root, "diff", "--name-only", "HEAD").splitlines() if p)
     paths.update(
-        p for p in _git(root, "ls-files", "--others", "--exclude-standard").splitlines() if p
+        p
+        for p in _git(root, "ls-files", "--others", "--exclude-standard").splitlines()
+        if p
     )
     reviewed = sorted(p for p in paths if not _is_runtime_state(p, config))
     digest = hashlib.sha256()
@@ -149,6 +165,7 @@ def provenance(root, config):
 
 
 # ------------------------------------------------------------------------- mailbox
+
 
 def outbox(root, agent):
     return mailbox(root) / f"{agent}.outbox.jsonl"
@@ -268,6 +285,80 @@ def show_inbox(root, agent, config, show_all=False):
     return pending
 
 
+# --------------------------------------------------------------------------- watch
+
+
+def watch(
+    root,
+    config,
+    watcher,
+    interval=5.0,
+    command=None,
+    once=False,
+    from_start=False,
+    stream=None,
+):
+    """Poll the other agent's outbox and report each new message.
+
+    The watch cursor is deliberately SEPARATE from the agent's read cursor
+    (`.watch.<watcher>.cursor` vs `.<watcher>.cursor`). A watcher that advanced the
+    read cursor would consume the agent's unread queue, so `--inbox` would then show
+    nothing and the messages the watcher announced would be invisible to the agent
+    that needs to act on them.
+
+    Polling rather than inotify: the mailbox often lives on a Windows drive mounted
+    into WSL, where inotify events are unreliable. A 5s poll costs nothing and works
+    on every filesystem.
+    """
+    import time
+
+    stream = stream or sys.stdout
+    other = [a for a in config["agents"] if a != watcher][0]
+    path = outbox(root, other)
+    cursor = mailbox(root) / f".watch.{watcher}.cursor"
+    seen = (
+        0
+        if from_start
+        else (
+            int(cursor.read_text().strip()) if cursor.exists() else len(read_all(path))
+        )
+    )
+    print(
+        f"watching {path.name} for {watcher} (from record {seen}, every {interval}s)",
+        file=stream,
+        flush=True,
+    )
+    while True:
+        messages = read_all(path)
+        fresh = messages[seen:]
+        if fresh:
+            for message in fresh:
+                print(
+                    f"[{message.get('ts', '?')}] {message.get('id', '?')} "
+                    f"{str(message.get('type', '?')).upper()}"
+                    f"{' [' + message['severity'] + ']' if message.get('severity') else ''}"
+                    f" {(message.get('claim') or '')[:100]}",
+                    file=stream,
+                    flush=True,
+                )
+            seen = len(messages)
+            cursor.write_text(str(seen))
+            if command:
+                ids = ",".join(str(m.get("id")) for m in fresh)
+                filled = (
+                    command.replace("{ids}", ids)
+                    .replace("{count}", str(len(fresh)))
+                    .replace("{agent}", other)
+                )
+                print(f"  -> {filled}", file=stream, flush=True)
+                subprocess.run(filled, shell=True, cwd=root, check=False)  # noqa: S602
+            if once:
+                return fresh
+        elif once:
+            return []
+        time.sleep(interval)
+
+
 # ---------------------------------------------------------------------------- init
 
 SHIM = '''#!/usr/bin/env python3
@@ -297,11 +388,17 @@ def init(root, agents, force=False):
     config_path = box / "config.json"
     if force or not config_path.exists():
         config_path.write_text(
-            json.dumps({"agents": list(agents), "provenance_files": [], "exclude": []}, indent=2)
+            json.dumps(
+                {"agents": list(agents), "provenance_files": [], "exclude": []},
+                indent=2,
+            )
             + "\n"
         )
         created.append("config.json")
-    for name, dest in (("OWNERSHIP.md", box / "OWNERSHIP.md"), ("AGENTS.md", Path(root) / "AGENTS.md")):
+    for name, dest in (
+        ("OWNERSHIP.md", box / "OWNERSHIP.md"),
+        ("AGENTS.md", Path(root) / "AGENTS.md"),
+    ):
         source = TEMPLATES / name
         if source.is_file() and (force or not dest.exists()):
             text = source.read_text().replace("{{TOOL}}", str(HERE))
@@ -328,14 +425,22 @@ def init(root, agents, force=False):
 
 # ---------------------------------------------------------------------------- main
 
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", choices=("init", "status"), default=None)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "command", nargs="?", choices=("init", "status", "watch"), default=None
+    )
     parser.add_argument("--root", help="project root (default: git top level of cwd)")
     parser.add_argument("--from", dest="agent", default=os.environ.get("COLLAB_AGENT"))
-    parser.add_argument("--agents", nargs=2, metavar=("A", "B"), default=list(DEFAULT_AGENTS))
-    parser.add_argument("--force", action="store_true", help="init: overwrite existing files")
+    parser.add_argument(
+        "--agents", nargs=2, metavar=("A", "B"), default=list(DEFAULT_AGENTS)
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="init: overwrite existing files"
+    )
     parser.add_argument("--inbox", action="store_true")
     parser.add_argument("--all", action="store_true", help="with --inbox, show history")
     parser.add_argument("--type", choices=TYPES)
@@ -345,10 +450,32 @@ def main(argv=None):
     parser.add_argument("--expect")
     parser.add_argument("--evidence")
     parser.add_argument("--evidence-file")
-    parser.add_argument("--evidence-kind", choices=("command", "citation"), default="command")
+    parser.add_argument(
+        "--evidence-kind", choices=("command", "citation"), default="command"
+    )
     parser.add_argument("--replies-to")
-    parser.add_argument("--task", help="task id, for independent threads under one agent")
-    parser.add_argument("--status", choices=("open", "fixed", "withdrawn"), default="open")
+    parser.add_argument(
+        "--task", help="task id, for independent threads under one agent"
+    )
+    parser.add_argument(
+        "--status", choices=("open", "fixed", "withdrawn"), default="open"
+    )
+    parser.add_argument(
+        "--interval", type=float, default=5.0, help="watch: poll seconds"
+    )
+    parser.add_argument(
+        "--exec",
+        dest="exec_cmd",
+        help="watch: shell command per new batch; {ids} {count} {agent}",
+    )
+    parser.add_argument(
+        "--once", action="store_true", help="watch: exit after one batch"
+    )
+    parser.add_argument(
+        "--from-start",
+        action="store_true",
+        help="watch: include messages already in the outbox",
+    )
     args = parser.parse_args(argv)
 
     root = find_root(args.root)
@@ -361,16 +488,31 @@ def main(argv=None):
         print(f"root:    {root}")
         print(f"agents:  {', '.join(config['agents'])}")
         for agent in config["agents"]:
-            print(f"  {agent}.outbox.jsonl: {len(read_all(outbox(root, agent)))} message(s)")
+            print(
+                f"  {agent}.outbox.jsonl: {len(read_all(outbox(root, agent)))} message(s)"
+            )
         prov = provenance(root, config)
-        print(f"commit {prov['commit']}  snapshot {prov['snapshot_sha256']}  "
-              f"uncommitted {prov['uncommitted_paths']}")
+        print(
+            f"commit {prov['commit']}  snapshot {prov['snapshot_sha256']}  "
+            f"uncommitted {prov['uncommitted_paths']}"
+        )
         return 0
 
     if not args.agent:
         parser.error("--from is required (or set COLLAB_AGENT)")
     if args.agent not in config["agents"]:
         parser.error(f"--from must be one of {config['agents']}")
+    if args.command == "watch":
+        watch(
+            root,
+            config,
+            args.agent,
+            interval=args.interval,
+            command=args.exec_cmd,
+            once=args.once,
+            from_start=args.from_start,
+        )
+        return 0
     if args.inbox:
         show_inbox(root, args.agent, config, args.all)
         return 0
@@ -391,21 +533,29 @@ def main(argv=None):
         "provenance": provenance(root, config),
         "status": args.status,
     }
-    message.update({
-        key: value
-        for key, value in (
-            ("severity", args.severity), ("ref", args.ref), ("claim", args.claim),
-            ("expect", args.expect), ("replies_to", args.replies_to), ("task", args.task),
-        )
-        if value
-    })
+    message.update(
+        {
+            key: value
+            for key, value in (
+                ("severity", args.severity),
+                ("ref", args.ref),
+                ("claim", args.claim),
+                ("expect", args.expect),
+                ("replies_to", args.replies_to),
+                ("task", args.task),
+            )
+            if value
+        }
+    )
     if evidence:
         message["evidence"] = evidence
         message["evidence_kind"] = args.evidence_kind
 
     append(root, args.agent, message, config)
-    print(f"sent {message['id']} ({message['type']}) @ {message['provenance']['commit']} "
-          f"snapshot={message['provenance']['snapshot_sha256']}")
+    print(
+        f"sent {message['id']} ({message['type']}) @ {message['provenance']['commit']} "
+        f"snapshot={message['provenance']['snapshot_sha256']}"
+    )
     return 0
 
 

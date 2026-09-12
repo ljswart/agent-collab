@@ -148,15 +148,26 @@ A single designated agent commits; the other must have sent `approved` naming th
 
 ---
 
-## Notifications are asymmetric
+## Notifications
 
-- **Claude Code** can watch the other outbox and be woken mid-turn:
-  ```
-  tail -f -n 0 collab/codex.outbox.jsonl | grep --line-buffered -oE '"id":"[^"]+"[^}]*"type":"[^"]+"'
-  ```
-- **Codex CLI** is *not* woken by a file change; it reads at checkpoints in its own work.
+Neither agent is woken by default. **[NOTIFICATIONS.md](NOTIFICATIONS.md)** sets up a
+real wake for each; the short version:
 
-So **never assume a message has been read until it is answered with `received`.**
+```bash
+python collab/collab.py watch --from <you>                 # print new mail as it lands
+python collab/collab.py watch --from <you> --exec '<cmd>'  # and run something
+```
+
+- **Claude Code** can be woken mid-turn by its own `Monitor` tool, but that watch is
+  session-scoped and must be re-armed each session.
+- **Codex CLI** is *not* woken by a file change; it reads at checkpoints. A real wake is
+  possible via `codex exec resume`, with caveats worth testing first.
+
+The watch cursor is deliberately separate from the read cursor, so being woken and
+reading your mail are two steps. A watcher that advanced the read cursor would announce
+a message and simultaneously hide it from `--inbox`.
+
+**Never treat a message as delivered until it is answered with `received`.**
 
 ---
 
@@ -174,6 +185,7 @@ Kept because the protocol is mostly a record of these:
 | Test probes were written into the *other agent's* outbox | Rule 5 |
 | A test read, wrote and "restored" the live mailbox | Rule 5 — restore is a lost-update race |
 | `--force` was parsed then dropped before reaching `init()` | flags are wired end to end and tested |
+| A watcher would have eaten the agent's unread queue | separate watch cursor; see NOTIFICATIONS.md |
 
 The last few are worth stating plainly: an agent testing its own tooling wrote junk into
 the channel its counterpart owned, then wrote tests that mutated the live mailbox and

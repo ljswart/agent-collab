@@ -74,14 +74,17 @@ python collab/collab.py --from codex --type reproduced --replies-to claude-0003 
   claim names the data it was measured on.
 - **exclude** — extra paths kept out of the reviewed snapshot (noisy generated files).
 
-## Watching for replies (Claude Code)
+## Watching for replies
 
-```
-tail -f -n 0 collab/codex.outbox.jsonl | grep --line-buffered -oE '"id":"[^"]+"[^}]*"type":"[^"]+"'
+```bash
+python collab/collab.py watch --from claude              # print new mail as it arrives
+python collab/collab.py watch --from claude --interval 2 --exec 'notify-send "{count} from {agent}"'
 ```
 
-Codex has no equivalent wake; it reads at checkpoints. Never assume delivery before a
-`received` reply.
+Full setup per agent, including a real wake for Codex via `codex exec resume` and the
+four ways it fails quietly: **[NOTIFICATIONS.md](NOTIFICATIONS.md)**.
+
+Never assume delivery before a `received` reply.
 
 ## Tests
 

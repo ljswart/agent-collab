@@ -20,7 +20,9 @@ import collab  # noqa: E402
 def project(tmp_path):
     """A real git repo with an initialised mailbox."""
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True
+    )
     subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True)
     (tmp_path / "seed.txt").write_text("seed\n")
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
@@ -96,10 +98,14 @@ def test_provenance_files_are_hashed(project):
 
 def test_ids_are_allocated_under_the_append_lock(project):
     config = collab.load_config(project)
-    ids = [collab.append(project, "codex", record("codex"), config)["id"] for _ in range(3)]
+    ids = [
+        collab.append(project, "codex", record("codex"), config)["id"] for _ in range(3)
+    ]
     assert len(set(ids)) == 3, ids
-    written = [json.loads(line)["id"] for line in
-               collab.outbox(project, "codex").read_text().splitlines()]
+    written = [
+        json.loads(line)["id"]
+        for line in collab.outbox(project, "codex").read_text().splitlines()
+    ]
     assert written == ids
 
 
@@ -151,6 +157,72 @@ def test_cursor_only_advances_over_complete_records(project):
     assert len(collab.show_inbox(project, "claude", config)) == 1
 
 
+def test_watch_does_not_consume_the_agents_unread_queue(project, capsys):
+    """The watch cursor must be separate from the read cursor.
+
+    A watcher that advanced the read cursor would announce a message and then make
+    it invisible to --inbox, so the agent that has to act on it never sees it.
+    """
+    config = collab.load_config(project)
+    collab.append(project, "codex", record("codex"), config)
+
+    fresh = collab.watch(
+        project, config, "claude", interval=0.01, once=True, from_start=True
+    )
+    assert len(fresh) == 1
+    assert (collab.mailbox(project) / ".watch.claude.cursor").exists()
+    assert not (collab.mailbox(project) / ".claude.cursor").exists()
+
+    capsys.readouterr()
+    assert len(collab.show_inbox(project, "claude", config)) == 1, (
+        "inbox must still deliver it"
+    )
+
+
+def test_watch_reports_only_new_records(project, capsys):
+    config = collab.load_config(project)
+    collab.append(project, "codex", record("codex"), config)
+    assert (
+        len(
+            collab.watch(
+                project, config, "claude", interval=0.01, once=True, from_start=True
+            )
+        )
+        == 1
+    )
+    assert collab.watch(project, config, "claude", interval=0.01, once=True) == []
+    collab.append(project, "codex", record("codex"), config)
+    assert len(collab.watch(project, config, "claude", interval=0.01, once=True)) == 1
+
+
+def test_watch_exec_substitutes_placeholders(project, tmp_path, capsys):
+    config = collab.load_config(project)
+    collab.append(project, "codex", record("codex"), config)
+    marker = tmp_path / "woken.txt"
+    collab.watch(
+        project,
+        config,
+        "claude",
+        interval=0.01,
+        once=True,
+        from_start=True,
+        command=f"echo '{{count}} {{agent}} {{ids}}' > {marker}",
+    )
+    assert marker.read_text().strip() == "1 codex codex-0001"
+
+
+def test_watch_defers_an_incomplete_tail(project, capsys):
+    """A torn append must not be announced as a message."""
+    config = collab.load_config(project)
+    collab.append(project, "codex", record("codex"), config)
+    box = collab.outbox(project, "codex")
+    box.write_text(box.read_text() + '{"id":"codex-000')
+    fresh = collab.watch(
+        project, config, "claude", interval=0.01, once=True, from_start=True
+    )
+    assert len(fresh) == 1, "only the complete record is announced"
+
+
 def test_git_failure_fails_closed(tmp_path, monkeypatch):
     class Failed:
         returncode = 1
@@ -167,8 +239,12 @@ def test_git_failure_fails_closed(tmp_path, monkeypatch):
 
 def test_runtime_state_classification():
     config = {"agents": ["claude", "codex"], "exclude": []}
-    for path in ("collab/claude.outbox.jsonl", "collab/codex.outbox.jsonl",
-                 "collab/.lock", "collab/.claude.cursor"):
+    for path in (
+        "collab/claude.outbox.jsonl",
+        "collab/codex.outbox.jsonl",
+        "collab/.lock",
+        "collab/.claude.cursor",
+    ):
         assert collab._is_runtime_state(path, config), path
     for path in ("collab/OWNERSHIP.md", "collab/config.json", "src/thing.py"):
         assert not collab._is_runtime_state(path, config), path
@@ -185,19 +261,48 @@ def test_force_actually_overwrites(project):
 
 
 def test_config_requires_exactly_two_agents(project):
-    (collab.mailbox(project) / "config.json").write_text(json.dumps({"agents": ["solo"]}))
+    (collab.mailbox(project) / "config.json").write_text(
+        json.dumps({"agents": ["solo"]})
+    )
     with pytest.raises(ValueError, match="exactly two agents"):
         collab.load_config(project)
 
 
 def test_end_to_end_round_trip(project, capsys):
-    config = collab.load_config(project)
-    assert collab.main(["--root", str(project), "--from", "claude", "--type", "ping",
-                        "--claim", "hello"]) == 0
+    assert (
+        collab.main(
+            [
+                "--root",
+                str(project),
+                "--from",
+                "claude",
+                "--type",
+                "ping",
+                "--claim",
+                "hello",
+            ]
+        )
+        == 0
+    )
     assert collab.main(["--root", str(project), "--from", "codex", "--inbox"]) == 0
     out = capsys.readouterr().out
     assert "PING" in out and "hello" in out
-    assert collab.main(["--root", str(project), "--from", "codex", "--type", "received",
-                        "--replies-to", "claude-0001", "--claim", "got it"]) == 0
+    assert (
+        collab.main(
+            [
+                "--root",
+                str(project),
+                "--from",
+                "codex",
+                "--type",
+                "received",
+                "--replies-to",
+                "claude-0001",
+                "--claim",
+                "got it",
+            ]
+        )
+        == 0
+    )
     assert collab.main(["--root", str(project), "--from", "claude", "--inbox"]) == 0
     assert "RECEIVED" in capsys.readouterr().out
