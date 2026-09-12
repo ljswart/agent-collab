@@ -49,7 +49,7 @@ updates, no merge.
 
 ---
 
-## The seven rules
+## The eight rules
 
 ### 1. Provenance identifies exactly what was reviewed
 
@@ -100,7 +100,31 @@ Not every valid finding has a runnable repro. Architectural, documentation and s
 problems use `evidence_kind: "citation"` pointing at code or a document. A finding that
 a conclusion overreaches its evidence is a real finding with no command attached.
 
-### 5. Disagreement is bounded, and does not block everything else
+### 5. Reproductions must not mutate shared state
+
+An agent testing its own tooling once wrote probe records into its counterpart's outbox,
+and a regression test read the live mailbox, wrote to it, and restored it in a `finally`
+block — which silently destroys any message that arrived in between.
+
+So: **a reproduction, a test, or a diagnostic must never write to a live mailbox, to the
+other agent's files, or to shared source.** "Append and restore" is not safe; it is a
+lost-update race with a tidy-looking cleanup. Build a temporary git repository, point the
+tool's root at it, and exercise that. A test that needs a mailbox creates one.
+
+Verify it rather than assume it: hash the shared files, run the suite, hash again.
+
+```bash
+python - <<'EOF'
+import hashlib, subprocess
+from pathlib import Path
+watch = ["collab/claude.outbox.jsonl", "collab/codex.outbox.jsonl", "collab/collab.py"]
+snap = lambda: {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in watch}
+before = snap(); subprocess.run(["python", "-m", "pytest", "-q"]); after = snap()
+print("mutated:", [p for p in before if before[p] != after[p]] or "NONE")
+EOF
+```
+
+### 6. Disagreement is bounded, and does not block everything else
 
 After two unsuccessful rounds on the same claim, both agents send `escalate` stating
 their position in five lines or fewer with the evidence each rests on, and hand it to the
@@ -109,14 +133,14 @@ human. **Meanwhile continue unrelated work** — one disputed claim must not sta
 Where a dispute can be settled by a test, write the failing test. That converts opinion
 into an artifact. If no test can be written, the claim is not concrete enough to act on.
 
-### 6. Agreement between agents is not evidence
+### 7. Agreement between agents is not evidence
 
 Two agents concurring does not make a claim true, and is weakest exactly where it feels
 strongest — on claims about performance, profitability or "this is now correct".
 Convergence is a reason to check harder, not to relax. Record what was measured, not what
 was agreed.
 
-### 7. One integrator commits
+### 8. One integrator commits
 
 A single designated agent commits; the other must have sent `approved` naming that exact
 `commit` + `snapshot_sha256`. Set the commit identity deliberately and record it in
@@ -147,8 +171,11 @@ Kept because the protocol is mostly a record of these:
 | Two senders allocated the same message id | id assigned inside the append lock |
 | A torn append crashed the reader, losing every earlier record | parse complete records only, defer the tail |
 | One record missing `ts` hid the whole mailbox | every field optional at display; validate on send |
-| Test probes were written into the *other agent's* outbox | tests must never touch a live mailbox |
+| Test probes were written into the *other agent's* outbox | Rule 5 |
+| A test read, wrote and "restored" the live mailbox | Rule 5 — restore is a lost-update race |
+| `--force` was parsed then dropped before reaching `init()` | flags are wired end to end and tested |
 
-The last one is worth stating plainly: an agent testing its own tooling wrote junk into
-the channel its counterpart owned. Redirect the mailbox root in tests; never exercise
-against the real one.
+The last few are worth stating plainly: an agent testing its own tooling wrote junk into
+the channel its counterpart owned, then wrote tests that mutated the live mailbox and
+"restored" it. Redirect the mailbox root in tests; never exercise against the real one;
+and verify that claim with a hash check rather than trusting the cleanup code.
