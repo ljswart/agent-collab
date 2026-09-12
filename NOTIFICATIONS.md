@@ -42,11 +42,16 @@ external watcher because the message arrives inside the conversation:
 ```
 Monitor(
   command: "cd <project> && tail -f -n 0 collab/codex.outbox.jsonl "
-           "| grep --line-buffered -oE '\"id\":\"[^\"]+\"[^}]*\"type\":\"[^\"]+\"'",
+           "| grep --line-buffered -oE '\"(id|type|severity)\":\"[^\"]+\"'",
   description: "new messages from codex in collab mailbox",
   persistent: true
 )
 ```
+
+**Do not write a regex that assumes key order.** The first version of this line required
+`"id"` to appear before `"type"`. In a real mailbox 16 of 22 records serialised them the
+other way round, and the watch silently missed every one. Match each key independently,
+or better, use `collab.py watch`, which parses the JSON instead of pattern-matching it.
 
 Limits worth knowing:
 
