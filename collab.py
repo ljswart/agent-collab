@@ -7,7 +7,7 @@ one: append-only outboxes, content-addressed provenance, and a vocabulary that k
 
 Install once, use in any project:
 
-    python ~/Documents/agent-collab/collab.py init          # scaffold ./collab here
+    python /path/to/agent-collab/collab.py init             # scaffold ./collab here
     python collab/collab.py --from claude --inbox           # read your mail
     python collab/collab.py --from claude --type finding \\
         --severity P1 --ref src/thing.py:42 \\
@@ -22,6 +22,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -285,6 +287,30 @@ def show_inbox(root, agent, config, show_all=False):
 
 # --------------------------------------------------------------------------- watch
 
+# Message ids are generated as "<agent>-NNNN". Anything else came from a hand-written
+# record, so it is replaced rather than passed on.
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+def _substitute(command, fresh, other):
+    """Fill {ids}/{count}/{agent} in a --exec template, shell-escaped.
+
+    Every value crosses a trust boundary: it is read from the OTHER agent's outbox,
+    which this protocol treats as untrusted by design. Interpolating it raw into a
+    shell command is remote code execution on the watcher -- and quoting the
+    placeholder in the template does not help, because a crafted value simply closes
+    the quote. So each value is shlex-quoted, and ids that do not look like ids are
+    replaced outright.
+    """
+    ids = ",".join(
+        (i if SAFE_ID.match(i := str(m.get("id", ""))) else "<malformed-id>") for m in fresh
+    )
+    return (
+        command.replace("{ids}", shlex.quote(ids))
+        .replace("{count}", shlex.quote(str(len(fresh))))
+        .replace("{agent}", shlex.quote(str(other)))
+    )
+
 
 def watch(
     root,
@@ -340,12 +366,7 @@ def watch(
             seen = len(messages)
             cursor.write_text(str(seen))
             if command:
-                ids = ",".join(str(m.get("id")) for m in fresh)
-                filled = (
-                    command.replace("{ids}", ids)
-                    .replace("{count}", str(len(fresh)))
-                    .replace("{agent}", other)
-                )
+                filled = _substitute(command, fresh, other)
                 print(f"  -> {filled}", file=stream, flush=True)
                 subprocess.run(filled, shell=True, cwd=root, check=False)  # noqa: S602
             if once:

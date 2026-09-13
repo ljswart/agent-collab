@@ -197,6 +197,74 @@ def test_watch_exec_substitutes_placeholders(project, tmp_path, capsys):
     assert marker.read_text().strip() == "1 codex codex-0001"
 
 
+@pytest.mark.parametrize(
+    "hostile_id",
+    [
+        "x; touch {marker}; echo",
+        'x"; touch {marker}; echo "',
+        "x$(touch {marker})",
+        "x`touch {marker}`",
+        "x | touch {marker}",
+        "x && touch {marker}",
+    ],
+)
+def test_watch_exec_cannot_be_shell_injected(project, tmp_path, hostile_id, capsys):
+    """Values substituted into --exec come from the OTHER agent's outbox.
+
+    That outbox is untrusted by design, so interpolating it raw into a shell command
+    is remote code execution on the watcher. Quoting the placeholder in the template
+    does not help: a crafted value closes the quote.
+    """
+    marker = tmp_path / "pwned"
+    collab.outbox(project, "codex").write_text(
+        json.dumps(
+            {
+                "id": hostile_id.format(marker=marker),
+                "ts": "2026-01-01T00:00:00+00:00",
+                "from": "codex",
+                "type": "ping",
+                "provenance": {"commit": "a"},
+            }
+        )
+        + "\n"
+    )
+    for template in ("echo got {ids}", 'echo "got {ids}"'):
+        collab.watch(
+            project,
+            collab.load_config(project),
+            "claude",
+            interval=0.01,
+            once=True,
+            from_start=True,
+            command=template,
+        )
+        assert not marker.exists(), f"injection succeeded via {template}"
+
+
+def test_watch_exec_passes_legitimate_values_through(project, tmp_path):
+    config = collab.load_config(project)
+    collab.append(project, "codex", record("codex"), config)
+    out = tmp_path / "out.txt"
+    collab.watch(
+        project,
+        config,
+        "claude",
+        interval=0.01,
+        once=True,
+        from_start=True,
+        command=f"echo {{count}} {{agent}} {{ids}} > {out}",
+    )
+    assert out.read_text().strip() == "1 codex codex-0001"
+
+
+def test_malformed_ids_are_replaced_not_passed_on():
+    fresh = [{"id": "codex-0001"}, {"id": "x; rm -rf /"}, {"id": None}]
+    filled = collab._substitute("run {ids}", fresh, "codex")
+    assert "rm -rf" not in filled
+    assert "<malformed-id>" in filled
+    assert "codex-0001" in filled
+
+
 def test_watch_defers_an_incomplete_tail(project, capsys):
     """A torn append must not be announced as a message."""
     config = collab.load_config(project)

@@ -1,157 +1,81 @@
 # Notifications
 
-By default neither agent knows a message has arrived. This document sets up a real wake
-for each, and explains which parts are reliable.
+Neither agent is woken by default. Delivery is confirmed only by a `received` reply
+(README rule 3); everything below is a prompt to go read, not a substitute for reading.
 
-The shared mechanism is one command:
+## The watcher
 
 ```bash
 python collab/collab.py watch --from <you>
+python collab/collab.py watch --from <you> --interval 2 --exec 'notify-send "agent mail" "{count} from {agent}"'
 ```
 
-It polls the *other* agent's outbox and prints each new message as it lands. Add
-`--exec` to run something when mail arrives — that is how a wake is built.
+Polls the other agent's outbox and prints each new message.
 
-```bash
-python collab/collab.py watch --from claude --exec 'notify-send "mail from {agent}: {ids}"'
-```
+| flag | meaning |
+|---|---|
+| `--interval S` | poll period, default 5. Polling, not inotify: inotify is unreliable on Windows drives mounted into WSL. |
+| `--exec CMD` | shell command per batch. Placeholders `{count}`, `{agent}`, `{ids}`. Values are `shlex`-quoted and ids validated; see README Security. |
+| `--once` | exit after the first batch, or at once if there is none. Use it to test. |
+| `--from-start` | include messages already in the outbox |
 
-Placeholders: `{ids}`, `{count}`, `{agent}`.
+The watch cursor (`collab/.watch.<agent>.cursor`) is separate from the read cursor
+(`collab/.<agent>.cursor`). A watcher that advanced the read cursor would announce a
+message and hide it from `--inbox` in the same motion. Pinned by
+`test_watch_does_not_consume_the_agents_unread_queue`.
 
----
-
-## The one thing that would silently break this
-
-The watch cursor (`collab/.watch.<agent>.cursor`) is **separate** from the read cursor
-(`collab/.<agent>.cursor`).
-
-If a watcher advanced the read cursor, it would announce a message and in the same
-motion make it invisible to `--inbox` — so the agent that has to act on it would never
-see it. Pinned by `test_watch_does_not_consume_the_agents_unread_queue`.
-
-The practical consequence: **being woken and reading your mail are separate steps.** A
-wake tells you to run `--inbox`; it is not a substitute for it.
-
----
+Wake on `finding`, `question`, `escalate`; not on `received` or `ping`, or two watchers
+ping-pong. The watcher has no type filter; filter in `--exec` or by reading the line.
 
 ## Claude Code
 
-Claude Code can be woken mid-turn by its own `Monitor` tool, which is better than an
-external watcher because the message arrives inside the conversation:
+The `Monitor` tool wakes the session mid-turn, inside the conversation:
 
 ```
 Monitor(
   command: "cd <project> && tail -f -n 0 collab/codex.outbox.jsonl "
            "| grep --line-buffered -oE '\"(id|type|severity)\":\"[^\"]+\"'",
-  description: "new messages from codex in collab mailbox",
+  description: "new messages from codex",
   persistent: true
 )
 ```
 
-**Do not write a regex that assumes key order.** The first version of this line required
-`"id"` to appear before `"type"`. In a real mailbox 16 of 22 records serialised them the
-other way round, and the watch silently missed every one. Match each key independently,
-or better, use `collab.py watch`, which parses the JSON instead of pattern-matching it.
+- Match each key independently. A regex requiring `"id"` before `"type"` missed 16 of 22
+  real records.
+- Session-scoped: re-arm at the start of every session that does shared work.
+- `tail -n 0` starts at the end; read existing mail with `--inbox` first.
+- On a Windows drive under WSL `tail -f` polls and can lag a few seconds.
 
-Limits worth knowing:
-
-- It is **session-scoped**. It dies with the session and must be re-armed. Arm it early,
-  as part of picking up shared work.
-- `tail -f -n 0` starts from the end, so messages already sitting in the outbox are not
-  announced — read those with `--inbox` first.
-- On a Windows drive mounted into WSL, `tail -f` uses polling internally and can lag a
-  few seconds. That is fine for this purpose.
-
-If the tool is unavailable, fall back to the shared watcher in a background shell.
-
----
+Fallback: `collab.py watch` in a background shell.
 
 ## Codex CLI
 
-Codex is **not** woken by a file change. It reads at checkpoints in its own work. There
-are two levels of setup.
+Codex is not woken by a file change. Baseline: it runs `--inbox` at its own checkpoints,
+and the protocol assumes only that.
 
-### Level 1 — checkpoints (works today, no setup)
-
-Codex checks its mailbox at natural breaks:
-
-```bash
-python collab/collab.py --from codex --inbox
-```
-
-This is the baseline and it is what the protocol assumes. **Never treat a message as
-delivered until it is answered with `received`.**
-
-### Level 2 — a real wake via `codex exec resume`
-
-`codex exec resume <SESSION_ID> "<prompt>"` injects a turn into an existing session, so
-a watcher can wake Codex when mail arrives:
+Optional wake: `codex exec resume <SESSION_ID> "<prompt>"` starts a non-interactive Codex
+process that continues a stored session. Session ids are under `~/.codex/sessions/`.
 
 ```bash
 python collab/collab.py watch --from codex \
-  --exec 'codex exec resume <SESSION_ID> "Mailbox: {count} new message(s) from {agent} ({ids}). Run: python collab/collab.py --from codex --inbox"'
+  --exec 'codex exec resume <SESSION_ID> "Mailbox: {count} new from {agent}. Run: python collab/collab.py --from codex --inbox"'
 ```
 
-Find the session id from `~/.codex/sessions`, or have the Codex session print its own id
-once and record it in `collab/config.json`.
+Test with `--once` before leaving it running. It fails quietly in four ways:
 
-Before relying on this, test it deliberately, because several things can go wrong and
-all of them fail quietly:
+1. **Reach.** It may continue the transcript in a new process rather than reach the
+   interactive session you are watching. Check the transcript, not the exit code.
+2. **Concurrency.** A resume landing mid-task may queue, drop or interleave.
+3. **Loops.** Do not wake on `received`.
+4. **Cost.** Every wake is a model turn.
 
-1. **Does resume actually reach the running session,** or does it start a detached one
-   whose output nobody reads? Verify by sending a ping and checking the session
-   transcript, not just the exit code.
-2. **Concurrency.** A resume that lands while Codex is mid-task may be queued, dropped,
-   or may interleave. Establish which before depending on it.
-3. **Loops.** If waking Codex causes it to send a message, and Codex's watcher wakes
-   Claude, and so on, two agents can ping-pong. Wake on `finding`, `question` and
-   `escalate`; do not wake on `received`.
-4. **Cost.** Every wake is a model turn. A noisy filter is a recurring bill.
+## Recommended
 
-Run it with `--once` first and confirm the behaviour before leaving it running.
+| who | mechanism |
+|---|---|
+| Claude Code | `Monitor` on the other outbox, armed at session start |
+| Codex CLI | checkpoint `--inbox` reads |
+| You | `watch --interval 2` in a spare pane, one per `--from`; no wake semantics to get wrong |
 
----
-
-## A human in a terminal
-
-The most reliable option, and the one to start with:
-
-```bash
-python collab/collab.py watch --from claude --interval 2
-```
-
-Leave it in a spare pane. It shows the traffic between both agents live, with no wake
-semantics to get wrong. Use it while testing Level 2 so you can see what the automation
-is actually doing.
-
-Desktop notification on WSL/Linux:
-
-```bash
-python collab/collab.py watch --from claude \
-  --exec 'notify-send "agent mail" "{count} from {agent}: {ids}"'
-```
-
----
-
-## Choosing a filter
-
-Waking on every message is usually wrong. The messages worth interrupting for are
-`finding`, `question` and `escalate`; `received` and `ping` are not.
-
-The watcher does not filter by type yet — filter in the `--exec` command, or read the
-printed line and decide. If you find yourself wanting a real filter, that is a good
-signal to add `--types` rather than to widen the wake.
-
----
-
-## Recommended setup
-
-| who | mechanism | effort |
-|---|---|---|
-| Claude Code | `Monitor` on the other outbox, armed at session start | one line |
-| Codex CLI | checkpoint `--inbox` reads | none |
-| You | `watch` in a spare terminal pane | one line |
-
-Add the `codex exec resume` wake only once the above is working and you have tested the
-four failure modes. A wake that fires unreliably is worse than a checkpoint you trust,
-because it invites both agents to assume delivery.
+Add the Codex wake only after the above works. An unreliable wake is worse than a
+checkpoint you trust: it invites both agents to assume delivery.

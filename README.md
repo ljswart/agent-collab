@@ -1,63 +1,50 @@
 # agent-collab
 
-A shared mailbox for two coding agents working in the same repository.
+A shared mailbox for two coding agents (Claude Code and Codex CLI) editing one repository.
 
-Claude Code and Codex CLI can both edit the same working tree, but they cannot talk to
-each other. Left alone they overwrite each other's edits, re-review work that already
-moved on, and agree on things neither has checked. This gives them a channel with enough
-structure to be useful: append-only outboxes, content-addressed provenance, and a
-vocabulary that keeps *"I read your message"* apart from *"I approve this revision"*.
-
-It is an **evidence exchange**, not a chat. A message asserting something without a way
-to check it is worth little; a message carrying a reproduction is worth acting on.
+Without a channel they overwrite each other's edits, re-review work that has moved on, and
+agree on things neither has checked. This gives them append-only outboxes,
+content-addressed provenance, and a vocabulary that keeps *"I read this"* apart from *"I
+approve this revision"*. It is an evidence exchange, not a chat.
 
 ```bash
-# in any git repository
-python /path/to/agent-collab/collab.py init
+python /path/to/agent-collab/collab.py init        # once, in the project root
 
-# agent A reports something, with a way to verify it
+# A reports something, with a way to check it
 python collab/collab.py --from claude --type finding --severity P1 \
   --ref src/sizing.py:151 \
   --claim "position size reads a price that is not yet observable" \
   --evidence-file /tmp/repro.py --expect "P&L differs: 1005.20 vs 1188.71"
 
-# agent B sees it, checks it, and answers
+# B reads it, checks it, answers
 python collab/collab.py --from codex --inbox
 python collab/collab.py --from codex --type reproduced --replies-to claude-0001 \
   --status fixed --claim "reproduced and fixed" --evidence "pytest -q" --expect "8 passed"
 ```
 
-**Requirements:** Python 3.11+ and `git`. No dependencies — `collab.py` is one file using
-only the standard library. `pytest` is needed only to run the tests.
+Python 3.11+, `git`, one file, standard library only. `pytest` only for the tests.
 
-Every rule below exists because something went wrong without it; the
-[list of those failures](#things-that-went-wrong) is at the end and is the most useful
-part of this README.
+- [QUICKSTART.md](QUICKSTART.md) — install, configure, CLI reference
+- [NOTIFICATIONS.md](NOTIFICATIONS.md) — how each agent learns mail has arrived
 
-- **[QUICKSTART.md](QUICKSTART.md)** — setup, daily commands, configuration
-- **[NOTIFICATIONS.md](NOTIFICATIONS.md)** — how each agent finds out mail has arrived
-
----
-
-## Files in a project
+## Layout
 
 ```
 <project>/
-  AGENTS.md                     # points both agents at this protocol
+  AGENTS.md                  # points both agents at this protocol
   collab/
-    collab.py                   # shim -> this tool
-    config.json                 # agent names, extra provenance files, exclusions
-    claude.outbox.jsonl         # claude appends; codex reads
-    codex.outbox.jsonl          # codex appends; claude reads
-    OWNERSHIP.md                # who holds which paths
-    .lock  .<agent>.cursor      # runtime state
+    collab.py                # shim -> this tool
+    config.json              # agent names, provenance files, exclusions
+    claude.outbox.jsonl      # claude appends; codex reads
+    codex.outbox.jsonl       # codex appends; claude reads
+    OWNERSHIP.md             # who holds which paths
+    .lock  .<agent>.cursor  .watch.<agent>.cursor
 ```
 
-Each agent appends **only to its own outbox**, and never edits it. Append-only with a
-single writer makes write conflicts structurally impossible — no clobbering, no lost
-updates, no merge.
+Each agent appends only to its own outbox and never edits it. One writer per file makes
+write conflicts structurally impossible.
 
-## Message schema
+## Message
 
 ```json
 {"id": "claude-0007", "ts": "…", "from": "claude",
@@ -72,73 +59,45 @@ updates, no merge.
  "status": "open | fixed | withdrawn"}
 ```
 
-`id` and `provenance` are filled in by the tool.
-
----
+`id` and `provenance` are filled in by the tool. `finding` and `claim` require evidence.
 
 ## The eight rules
 
-### 1. Provenance identifies exactly what was reviewed
+**1. Provenance names exactly what was reviewed.** Every message carries `commit` and
+`snapshot_sha256`, a hash over the bytes of every modified or untracked file. Hashing
+`git status` + `git diff` is not enough: an untracked file appears as `?? path` and its
+contents never enter the hash. Mailbox files are excluded from the snapshot; otherwise
+sending a message would stale every open approval. An approval is scoped to the revision
+it names. If either value has moved, it is stale and must be reissued.
 
-Every message carries the `commit` and a `snapshot_sha256` — a content hash over the
-bytes of every modified or untracked file.
+**2. Ownership is explicit.** `collab/OWNERSHIP.md` records who holds which paths. A
+transfer is a `handoff` that takes effect when the other agent replies `received`. For
+simultaneous work in one area use separate git worktrees, so the reviewer tests a fixed
+revision.
 
-Two subtleties, both learned the hard way:
-
-- Hashing `git status --porcelain` plus `git diff HEAD` is **not enough**. An untracked
-  file appears as a bare `?? path` whose contents never enter the hash, so two
-  materially different versions of a new file fingerprint identically.
-- The mailbox lives inside the repo it reviews, so mailbox traffic is **excluded** from
-  the snapshot. Otherwise sending a message would change the fingerprint and instantly
-  stale every outstanding approval.
-
-**An approval is scoped to the revision it names.** If `commit` or `snapshot_sha256` has
-moved, the approval is stale and must be reissued. Never carry an approval across an
-edit — that is how a reviewed change becomes an unreviewed one.
-
-### 2. Ownership is explicit
-
-`collab/OWNERSHIP.md` records who holds which paths. Transfers happen by a `handoff` and
-take effect only once the other agent replies `received`. For simultaneous work in the
-same area use separate **git worktrees**, so the reviewer tests an exact revision rather
-than a tree moving underneath it.
-
-### 3. Receipt is not agreement
-
-Four responses, never collapsed into one:
+**3. Receipt is not agreement.**
 
 | type | means |
 |---|---|
 | `received` | I have the message. No claim about correctness. |
-| `reproduced` | I ran the evidence and got the stated result — paste the real output. |
-| `disputed` | I checked and disagree, with my own evidence. |
+| `reproduced` | I ran the evidence and got the stated result. Paste the real output. |
+| `disputed` | I checked and disagree; here is my evidence. |
 | `approved` | This exact revision is correct and may be integrated. |
 
-Only `approved` authorises integration, and only for the revision it names.
+Only `approved` authorises integration, and only for the revision it names. A message is
+not delivered until it is answered with `received`.
 
-### 4. Evidence commands are inspected before they are run
+**4. Evidence commands are inspected before they run.** An `evidence` field is code
+written by another process. Read it before executing it; never pipe it to a shell unseen.
+If it would write outside the repo, touch credentials, reach the network, or delete
+anything, do not run it: reply `disputed` and ask for a narrower reproduction. Findings
+without a runnable repro (architecture, docs, scope, "the conclusion overreaches the
+evidence") use `evidence_kind: "citation"`.
 
-An `evidence` field is code written by another process. **Read it before executing it.**
-Never pipe it to a shell unseen. If it would write outside the repo, touch credentials,
-reach the network unexpectedly, or delete anything — don't run it. Reply `disputed` and
-ask for a narrower reproduction.
-
-Not every valid finding has a runnable repro. Architectural, documentation and scope
-problems use `evidence_kind: "citation"` pointing at code or a document. A finding that
-a conclusion overreaches its evidence is a real finding with no command attached.
-
-### 5. Reproductions must not mutate shared state
-
-An agent testing its own tooling once wrote probe records into its counterpart's outbox,
-and a regression test read the live mailbox, wrote to it, and restored it in a `finally`
-block — which silently destroys any message that arrived in between.
-
-So: **a reproduction, a test, or a diagnostic must never write to a live mailbox, to the
-other agent's files, or to shared source.** "Append and restore" is not safe; it is a
-lost-update race with a tidy-looking cleanup. Build a temporary git repository, point the
-tool's root at it, and exercise that. A test that needs a mailbox creates one.
-
-Verify it rather than assume it: hash the shared files, run the suite, hash again.
+**5. Reproductions must not mutate shared state.** A test, repro or diagnostic never
+writes to a live mailbox, the other agent's files, or shared source. "Append and restore"
+is a lost-update race with tidy-looking cleanup. Build a temporary git repository, point
+`--root` at it, exercise that. Verify rather than assume:
 
 ```bash
 python - <<'EOF'
@@ -151,99 +110,68 @@ print("mutated:", [p for p in before if before[p] != after[p]] or "NONE")
 EOF
 ```
 
-### 6. Disagreement is bounded, and does not block everything else
+**6. Disagreement is bounded and does not block the queue.** After two failed rounds on
+one claim, both agents send `escalate`: position in five lines or fewer, plus the evidence
+it rests on. Unrelated work continues. Where a test can settle it, write the failing test;
+if no test can be written, the claim is not concrete enough to act on.
 
-After two unsuccessful rounds on the same claim, both agents send `escalate` stating
-their position in five lines or fewer with the evidence each rests on, and hand it to the
-human. **Meanwhile continue unrelated work** — one disputed claim must not stall the queue.
+**7. Agreement between agents is not evidence.** Two agents concurring does not make a
+claim true, and is weakest where it feels strongest: performance, profitability, "this is
+now correct". Convergence is a reason to check harder. Record what was measured, not what
+was agreed. (Independent support: [Qiu & Gill 2026](https://arxiv.org/abs/2608.18167)
+report agents converging without evidence as the dominant failure of cooperative review.)
 
-Where a dispute can be settled by a test, write the failing test. That converts opinion
-into an artifact. If no test can be written, the claim is not concrete enough to act on.
-
-### 7. Agreement between agents is not evidence
-
-Two agents concurring does not make a claim true, and is weakest exactly where it feels
-strongest — on claims about performance, profitability or "this is now correct".
-Convergence is a reason to check harder, not to relax. Record what was measured, not what
-was agreed.
-
-### 8. One integrator commits
-
-A single designated agent commits; the other must have sent `approved` naming that exact
-`commit` + `snapshot_sha256`. Set the commit identity deliberately and record it in
-`OWNERSHIP.md`.
-
----
-
-## Notifications
-
-Neither agent is woken by default. **[NOTIFICATIONS.md](NOTIFICATIONS.md)** sets up a
-real wake for each; the short version:
-
-```bash
-python collab/collab.py watch --from <you>                 # print new mail as it lands
-python collab/collab.py watch --from <you> --exec '<cmd>'  # and run something
-```
-
-- **Claude Code** can be woken mid-turn by its own `Monitor` tool, but that watch is
-  session-scoped and must be re-armed each session.
-- **Codex CLI** is *not* woken by a file change; it reads at checkpoints. A real wake is
-  possible via `codex exec resume`, with caveats worth testing first.
-
-The watch cursor is deliberately separate from the read cursor, so being woken and
-reading your mail are two steps. A watcher that advanced the read cursor would announce
-a message and simultaneously hide it from `--inbox`.
-
-**Never treat a message as delivered until it is answered with `received`.**
-
----
-
-<a name="things-that-went-wrong"></a>
+**8. One integrator commits.** The designated agent commits only revisions the other has
+`approved` by `commit` + `snapshot_sha256`. Record the commit identity in `OWNERSHIP.md`.
 
 ## Things that went wrong
 
-Kept because the protocol is mostly a record of these:
+Each rule traces to one of these.
 
-| what happened | the rule it produced |
+| what happened | what it produced |
 |---|---|
-| Fingerprint was blind to new-file contents | Rule 1, content-addressed snapshot |
-| Sending a message changed the fingerprint | Rule 1, mailbox excluded |
+| Fingerprint was blind to new-file contents | Rule 1: content-addressed snapshot |
+| Sending a message changed the fingerprint | Rule 1: mailbox excluded |
 | Two senders allocated the same message id | id assigned inside the append lock |
-| A torn append crashed the reader, losing every earlier record | parse complete records only, defer the tail |
-| One record missing `ts` hid the whole mailbox | every field optional at display; validate on send |
+| A torn append crashed the reader, losing every earlier record | parse complete records only; defer the tail |
+| One record missing `ts` hid the whole mailbox | every field optional at display; validated on send |
 | Test probes were written into the *other agent's* outbox | Rule 5 |
-| A test read, wrote and "restored" the live mailbox | Rule 5 — restore is a lost-update race |
-| `--force` was parsed then dropped before reaching `init()` | flags are wired end to end and tested |
-| A watcher would have eaten the agent's unread queue | separate watch cursor; see NOTIFICATIONS.md |
-
-The last few are worth stating plainly: an agent testing its own tooling wrote junk into
-the channel its counterpart owned, then wrote tests that mutated the live mailbox and
-"restored" it. Redirect the mailbox root in tests; never exercise against the real one;
-and verify that claim with a hash check rather than trusting the cleanup code.
-
----
+| A test read, wrote and "restored" the live mailbox | Rule 5: restore is a lost-update race |
+| `--force` was parsed then dropped before reaching `init()` | flags wired end to end and tested |
+| A watcher would have consumed the agent's unread queue | separate watch cursor ([NOTIFICATIONS.md](NOTIFICATIONS.md)) |
+| A `Monitor` regex assumed key order; 16 of 22 records were missed | match keys independently, or parse the JSON |
+| `watch --exec` interpolated the counterpart's `id` into a shell command | substituted values are `shlex`-quoted and ids validated |
 
 ## Security
 
-Two things in this design deliberately execute or trust outside input. Both are safe only
-because the protocol says how to handle them:
+Two places execute or trust input from the other agent.
 
-- **`evidence` fields carry commands written by another agent.** Rule 4 exists for this:
-  read them before running them, never pipe them to a shell unseen. The tool never
-  executes an evidence field itself.
-- **`watch --exec` runs a shell command** you supply when mail arrives. It is your own
-  command, but the substituted `{ids}` come from the other agent's outbox, so do not
-  interpolate them anywhere a shell would re-parse them as code.
+- **`evidence` fields.** Rule 4. The tool prints them under `INSPECT BEFORE RUNNING` and
+  never executes them itself.
+- **`watch --exec`** runs your shell command with `shell=True`. Substituted values are
+  `shlex`-quoted, and an `id` that does not match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`
+  becomes `<malformed-id>`. Quoting the placeholder in your template would not have been
+  enough — a crafted value closes the quote — so the escaping happens at substitution.
+  The command itself is still yours: do not build one that re-evaluates its arguments.
 
-Mailbox files are plain text in your repository. Do not put credentials, tokens or
-customer data in a message; treat the mailbox as something that may end up in git history.
+Shell escaping assumes a POSIX shell. Mailbox files are plain text and may end up in git
+history. Do not put credentials, tokens
+or customer data in a message. Locking uses `fcntl`; on non-POSIX systems appends are not
+serialised and concurrent senders may duplicate ids.
 
-## Scope
+## Scope and related work
 
-This is a small, deliberately boring tool. It does not try to be a message broker, a task
-queue, or an agent framework. Two agents, one repository, append-only files, and a set of
-rules that were each paid for. If you need more than that, this is the wrong thing.
+Two agents, one repository, append-only files, rules that were each paid for. Not a
+broker, task queue or agent framework.
+
+- [OpenMOSS/claude-codex-handoff](https://github.com/OpenMOSS/claude-codex-handoff):
+  same shape (per-direction JSONL, cursors, ids under lock) plus task leases and a
+  cron wake; no provenance hashing or evidence vocabulary.
+- [A2A](https://a2a-protocol.org/latest/), [MCP](https://modelcontextprotocol.io):
+  networked protocols, a different layer. This tool is for agents with no such channel.
+- [AGENTS.md](https://agents.md/): the generated file follows the spec. Claude Code reads
+  `CLAUDE.md`, not `AGENTS.md`; see [QUICKSTART.md](QUICKSTART.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
