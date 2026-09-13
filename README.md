@@ -167,6 +167,9 @@ broker, task queue or agent framework.
 - [OpenMOSS/claude-codex-handoff](https://github.com/OpenMOSS/claude-codex-handoff):
   same shape (per-direction JSONL, cursors, ids under lock) plus task leases and a
   cron wake; no provenance hashing or evidence vocabulary.
+- [avivsinai/agent-message-queue](https://github.com/avivsinai/agent-message-queue):
+  Maildir-style file queue with cross-project routing; general messaging, no review
+  semantics. Claude Code's built-in Agent Teams mailbox is Claude-only.
 - [A2A](https://a2a-protocol.org/latest/), [MCP](https://modelcontextprotocol.io):
   networked protocols, a different layer. This tool is for agents with no such channel.
 - [AGENTS.md](https://agents.md/): the generated file follows the spec. Claude Code reads
