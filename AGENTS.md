@@ -8,6 +8,8 @@ Protocol: https://github.com/ljswart/agent-collab (README.md and SECURITY.md).
 - Use only the assigned ID; each new instance needs its own admission.
 - Use your unique instance ID with `agent-collab --from ID --inbox` at checkpoints.
 - A file change does not wake Codex. Receipt requires an explicit `received` reply.
+- `received`, `reproduced`, `disputed` and `approved` need `--replies-to <message-id>`;
+  a verdict that names no subject is refused. Unprompted reports are findings or claims.
 - Send to explicit `--to` recipients; omission broadcasts to other registered agents.
 - Inspect evidence before running it; use isolated fixtures for reproductions.
 - Claim paths with `agent-collab claim-path --from ID --path PATH`; renew leases.

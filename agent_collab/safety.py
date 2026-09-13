@@ -25,6 +25,9 @@ TYPES = (
     "disputed",
     "approved",
 )
+# A verdict that names no subject is unreadable evidence: a 10-agent trial produced
+# ten verdicts with no reply target, so nothing linked a result to the claim it judged.
+RESPONSE_TYPES = ("received", "reproduced", "disputed", "approved")
 WAKE_TYPES = ("finding", "claim", "question", "handoff", "escalate")
 
 

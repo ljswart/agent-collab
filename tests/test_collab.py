@@ -224,6 +224,46 @@ def test_reply_and_approval_require_existing_explicit_matching_subject(store):
         store.check_approval(approved["id"])
 
 
+def test_verdicts_must_name_the_message_they_answer(store):
+    """Ten of ten verdicts in a 10-agent trial carried no reply target, so nothing in the
+    store linked a result to the claim it judged. An unprompted report is a finding."""
+    for kind in safety.RESPONSE_TYPES:
+        with pytest.raises(ValueError, match=f"{kind} answers a specific message"):
+            store.send("codex", kind=kind, to=["claude"], fields={"claim": "agreement"})
+    for kind in ("ping", "finding", "claim", "question", "handoff", "escalate"):
+        fields = {"claim": "unprompted", "evidence": "pytest -q"}
+        assert store.send("codex", kind=kind, to=["claude"], fields=fields)["type"] == kind
+
+
+def test_generated_instructions_carry_every_enforced_rule(project):
+    """The AGENTS.md an agent actually reads is generated from cli.PROTOCOL. Editing the
+    unused templates/ copy changed nothing, which is how this rule first shipped invisible."""
+    generated = (project / "AGENTS.md").read_text()
+    assert "--replies-to <message-id>" in generated
+    for kind in safety.RESPONSE_TYPES:
+        assert f"`{kind}`" in generated, kind
+
+
+def test_a_verdict_reaches_the_agent_whose_work_it_judges(store):
+    """The auditors addressed every verdict to the orchestrator alone, so the agent whose
+    numbers were disputed was never told."""
+    proposal = store.send(
+        "claude",
+        kind="claim",
+        to=["codex", "claude-reviewer"],
+        fields={"claim": "sum=0.0104", "evidence": "sha256sum BTCUSDT-fundingRate-2025-07.zip"},
+    )
+    verdict = store.send(
+        "codex",
+        kind="disputed",
+        to=["claude-reviewer"],
+        fields={"replies_to": proposal["id"], "claim": "ground truth is 0.0073"},
+    )
+    assert verdict["to"] == ["claude", "claude-reviewer"]
+    assert [m["id"] for _, m in store.inbox("claude")] == [verdict["id"]]
+    assert store.get(verdict["replies_to"])["id"] == proposal["id"]
+
+
 @pytest.mark.parametrize(
     "bad", ["null\n", "[]\n", '{"bad":\n', "\ufffd\n", '{"id":"a","id":"b"}\n', '{"a":NaN}\n']
 )

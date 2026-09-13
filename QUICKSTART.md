@@ -77,7 +77,10 @@ agent-collab --from codex-reviewer --type approved --replies-to <proposal-id> \
 agent-collab check-approval --id <approval-id>
 ```
 
-Replies must name a message delivered to the sender. An approval targets a `claim`,
+`received`, `reproduced`, `disputed` and `approved` are answers: each requires
+`--replies-to` naming a message delivered to the sender, and reaches that message's sender
+even when `--to` lists someone else. Send an unprompted report as a `finding`, `claim` or
+`question` instead. An approval targets a `claim`,
 `finding`, or `handoff`; arbitrary messages and imported legacy approvals cannot authorize
 integration. Changing the worktree makes an approval stale. Reissue the proposal and
 approval after substantive changes. Do not modify reviewable files between checking and

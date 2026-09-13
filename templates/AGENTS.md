@@ -4,6 +4,7 @@ Use agent-collab 0.2 and assign each instance a unique registered ID.
 Read the project's AGENTS.md and the framework README.md/SECURITY.md.
 
 - Check `agent-collab --from ID --inbox` at checkpoints and reply `received` explicitly.
+- Answers (`received`, `reproduced`, `disputed`, `approved`) require `--replies-to <id>`.
 - Send evidence, inspect it before execution, and reproduce in temporary repositories.
 - Use explicit recipients; omission broadcasts to other registered instances.
 - Claim paths with `claim-path`, renew leases, and coordinate handoffs before releasing.

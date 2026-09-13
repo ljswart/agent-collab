@@ -331,6 +331,12 @@ class Store:
         target = self.get(reply) if reply else None
         if target and (agent not in target["to"] or target["from"] == agent):
             raise ValueError("reply must address a message delivered to this agent")
+        if kind in safety.RESPONSE_TYPES and target is None:
+            raise ValueError(
+                f"{kind} answers a specific message: pass --replies-to <message-id>. "
+                "IDs come from --inbox or export. To report something unprompted, "
+                "use finding, claim or question."
+            )
         if kind == "approved":
             if not target or target.get("legacy") or target.get("schema") != 2:
                 raise ValueError("approval requires a current-schema proposal")
@@ -345,6 +351,10 @@ class Store:
             if to is not None
             else ([target["from"]] if target else [a for a in settings["agents"] if a != agent])
         )
+        if target and target["from"] not in recipients:
+            # A verdict routed only to an orchestrator never reaches the agent whose work
+            # it judges. Answering someone always delivers to them.
+            recipients = [target["from"], *recipients]
         message = {
             "schema": 2,
             "project": self.project_id(),

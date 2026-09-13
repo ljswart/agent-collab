@@ -62,9 +62,12 @@ in [QUICKSTART.md](QUICKSTART.md); permission records are visible in the audit.
 1. **Evidence before agreement.** Findings and claims need evidence. Inspect commands
    before running them; never execute an evidence field automatically. Reproduce in a
    disposable repository. Record actual output and uncertainty.
-2. **Receipt is separate from approval.** `received` confirms reading, `reproduced` records
+2. **Answers name what they answer.** `received` confirms reading, `reproduced` records
    a checked result, `disputed` records disagreement, and `approved` authorizes a specific
-   proposal under the cooperating-agent protocol. Reading an inbox is not a receipt reply.
+   proposal under the cooperating-agent protocol. All four require `--replies-to` and are
+   refused without it, and each is delivered to the agent it answers whatever `--to` says.
+   Reading an inbox is not a receipt reply. Report something unprompted as a `finding`,
+   `claim` or `question`.
 3. **Approvals identify the reviewed subject.** An approval requires an existing proposal,
    its full commit and snapshot, and a matching current worktree. Run `check-approval`
    immediately before integration on a fixed revision. Review in your own checkout: `--root`
@@ -106,6 +109,7 @@ These were observed failures; the last column describes the current rule or impl
 | `chmod` silently left the live Windows-mounted store at 777 | Recheck directory/file modes; keep state on Linux storage |
 | An approval fingerprinted the proposer's worktree | Reviewer uses their own checkout at the proposed revision |
 | Two reviewer sessions shared one identity and duplicated findings | Each instance declares itself, obtains user approval and receives a unique ID |
+| Ten of ten verdicts named no subject and were routed past the agent judged | Answers require `--replies-to` and always deliver to the sender answered |
 
 ## See the communication
 
@@ -128,6 +132,10 @@ are in [VALIDATION.md](VALIDATION.md). Linux/WSL POSIX filesystem operations are
 native Windows fails explicitly. Keep authoritative state on a tested local Linux
 filesystem. Network filesystems and distributed deployments are not supported. Git
 worktree data and the mailbox stay local; cloning a repository does not clone its mailbox.
+
+Answer types now require `--replies-to`, so a send that previously succeeded without one
+is refused. Stored history is unaffected: validation applies to new sends, and existing
+untargeted answers stay readable and are never quarantined.
 
 0.2 intentionally removes shell `--exec` templates and changes JSONL files from the
 primary store to migration/export artifacts. Existing mailboxes are never imported or
