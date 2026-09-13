@@ -1,35 +1,16 @@
-# Ownership
+# Project integration roles
 
-Maintained by the **coordinator**. A transfer is a `handoff` message that takes effect
-when the other agent replies `received`.
-
-| role | agent |
-|---|---|
-| coordinator (maintains this file) | _unassigned_ |
-| integrator (commits) | _unassigned_ |
-| reviewer of record | _unassigned_ |
-
-The integrator commits only revisions the other agent has `approved` by `commit` +
-`snapshot_sha256`.
-
-## Current holdings
-
-| path | owner | since | note |
-|---|---|---|---|
-| `collab/**` | _unassigned_ | | protocol scaffold |
-| *(everything else)* | _unassigned_ | | claim with a `handoff` before editing |
-
-Unassigned means nobody edits it without claiming it first.
-
-## Simultaneous work
-
-Do not share a working tree. Use worktrees, so the reviewer tests an exact revision:
+Record the coordinator, integrator, reviewers and authorized commit identity here.
+Actual path claims live in the transactional store; this document is a human-readable
+role assignment, not the lock authority.
 
 ```bash
-git worktree add ../<project>-codex  -b codex/<task>
-git worktree add ../<project>-claude -b claude/<task>
+agent-collab claim-path --from YOUR_ID --path src --lease-seconds 900
+agent-collab release-path --from YOUR_ID --path src
+agent-collab activity --events
 ```
 
-## Commit identity
-
-Record the intended author here as `Name <email>`. Never commit as another.
+Renew claims before expiry. Discuss a handoff, release your lease, and require the recipient
+to confirm it acquired the new lease. Separate worktrees share message and claim state.
+The integrator checks an explicit approval on the fixed revision before integrating.
+A user override must be recorded transparently; it is never backdated as agent approval.

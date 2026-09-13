@@ -1,0 +1,40 @@
+{
+  "python": "3.12.3",
+  "sqlite": "3.45.1",
+  "platform": "Linux",
+  "registered_agents": 32,
+  "setup": "temporary local filesystem; fixture seed batched; sends are durable",
+  "results": [
+    {
+      "messages": 1005,
+      "send_median_ms": 20.196,
+      "inbox_100_ms": 7.579,
+      "inbox_rows": 100,
+      "inbox_peak_python_mib": 0.317,
+      "idle_poll_ms": 0.218,
+      "database_mib": 0.97
+    },
+    {
+      "messages": 10005,
+      "send_median_ms": 18.86,
+      "inbox_100_ms": 6.786,
+      "inbox_rows": 100,
+      "inbox_peak_python_mib": 0.302,
+      "idle_poll_ms": 0.112,
+      "database_mib": 8.98
+    },
+    {
+      "messages": 100005,
+      "send_median_ms": 19.118,
+      "inbox_100_ms": 7.46,
+      "inbox_rows": 100,
+      "inbox_peak_python_mib": 0.3,
+      "idle_poll_ms": 0.124,
+      "database_mib": 89.85
+    }
+  ],
+  "inbox_query_plan": [
+    "SEARCH d USING INDEX unread (agent=? AND seq>?)",
+    "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)"
+  ]
+}

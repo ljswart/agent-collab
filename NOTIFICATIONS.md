@@ -1,81 +1,96 @@
 # Notifications
 
-Neither agent is woken by default. Delivery is confirmed only by a `received` reply
-(README rule 3); everything below is a prompt to go read, not a substitute for reading.
+The reliable baseline for both Claude Code and Codex is an explicit inbox read at natural
+checkpoints. A background process printing a line does not prove the intended conversation
+received it. Only a `received` message confirms receipt under this protocol.
 
-## The watcher
+## Watch a routed inbox
 
 ```bash
-python collab/collab.py watch --from <you>
-python collab/collab.py watch --from <you> --interval 2 --exec 'notify-send "agent mail" "{count} from {agent}"'
+agent-collab watch --from codex-reviewer --consumer terminal
+agent-collab watch --from codex-reviewer --consumer terminal --once
 ```
 
-Polls the other agent's outbox and prints each new message.
+The watcher queries a shared SQLite store, not JSONL files or filesystem events. It works
+across project worktrees. New subscriptions start at the beginning of retained routed
+history, so starting a watcher does not silently skip an existing message. Reads are
+bounded to 100 candidate messages per poll. `--once` performs one bounded poll; if the
+first page contains only filtered messages, subsequent polls continue from that page.
 
-| flag | meaning |
-|---|---|
-| `--interval S` | poll period, default 5. Polling, not inotify: inotify is unreliable on Windows drives mounted into WSL. |
-| `--exec CMD` | shell command per batch. Placeholders `{count}`, `{agent}`, `{ids}`. Values are `shlex`-quoted and ids validated; see README Security. |
-| `--once` | exit after the first batch, or at once if there is none. Use it to test. |
-| `--from-start` | include messages already in the outbox |
+Each agent can have up to eight independently named notification consumers. Inbox reads
+and notification state are independent. Two processes using the same consumer cannot
+lease overlapping batches or launch simultaneous callbacks for that consumer. A crashed
+watcher's lease expires and its work becomes eligible again.
 
-The watch cursor (`collab/.watch.<agent>.cursor`) is separate from the read cursor
-(`collab/.<agent>.cursor`). A watcher that advanced the read cursor would announce a
-message and hide it from `--inbox` in the same motion. Pinned by
-`test_watch_does_not_consume_the_agents_unread_queue`.
+## Safe external callbacks
 
-Wake on `finding`, `question`, `escalate`; not on `received` or `ping`, or two watchers
-ping-pong. The watcher has no type filter; filter in `--exec` or by reading the line.
+Shell `--exec` templates were removed. Use a JSON array of **literal arguments**; the
+executable must be an absolute path. The callback receives one JSON event on stdin.
+Nothing is substituted into argv and no shell is invoked.
 
-## Claude Code
-
-The `Monitor` tool wakes the session mid-turn, inside the conversation:
-
+```bash
+agent-collab watch --from codex-reviewer --consumer desktop \
+  --exec-argv '["/absolute/venv/bin/python","/absolute/notify.py"]'
 ```
-Monitor(
-  command: "cd <project> && tail -f -n 0 collab/codex.outbox.jsonl "
-           "| grep --line-buffered -oE '\"(id|type|severity)\":\"[^\"]+\"'",
-  description: "new messages from codex",
-  persistent: true
+
+Example `notify.py`, using a separately installed desktop notifier:
+
+```python
+import json
+import subprocess
+import sys
+
+payload = json.load(sys.stdin)
+subprocess.run(
+    ["/usr/bin/notify-send", "Agent mailbox", f"{len(payload['messages'])} new messages"],
+    check=True,
 )
 ```
 
-- Match each key independently. A regex requiring `"id"` before `"type"` missed 16 of 22
-  real records.
-- Session-scoped: re-arm at the start of every session that does shared work.
-- `tail -n 0` starts at the end; read existing mail with `--inbox` first.
-- On a Windows drive under WSL `tail -f` polls and can lag a few seconds.
+The event contains `schema`, `project`, receiving `agent`, `consumer`, and `messages` with
+only `id`, `from`, and `type`. Claims and evidence never become executable arguments or
+model prompts automatically. Callback files and their configuration are operator-owned
+code and must be reviewed; intentionally invoking an interpreter can execute whatever
+that operator configures.
 
-Fallback: `collab.py watch` in a background shell.
+Callback subscriptions default to `finding`, `claim`, `question`, `handoff`, and `escalate`.
+Use `--types` for an explicit selection. `received`, `approved`, and `ping` do not wake a
+model by default. Terminal-only watchers display every message type. Consumer settings
+are pinned: changing argv, workspace, interval or types requires a new consumer name.
 
-## Codex CLI
-
-Codex is not woken by a file change. Baseline: it runs `--inbox` at its own checkpoints,
-and the protocol assumes only that.
-
-Optional wake: `codex exec resume <SESSION_ID> "<prompt>"` starts a non-interactive Codex
-process that continues a stored session. Session ids are under `~/.codex/sessions/`.
+The poll interval is 0.1–60 seconds, default 5. A shared consumer rate gate coalesces work
+into at most one batch per interval. The callback timeout is 0.1–300 seconds, default 30;
+timeout terminates its process group. Failed launches/nonzero exits/timeouts remain pending
+with exponential backoff, then become visibly failed after five attempts.
 
 ```bash
-python collab/collab.py watch --from codex \
-  --exec 'codex exec resume <SESSION_ID> "Mailbox: {count} new from {agent}. Run: python collab/collab.py --from codex --inbox"'
+agent-collab status
+agent-collab activity --events --follow
+agent-collab retry --from codex-reviewer --consumer desktop
 ```
 
-Test with `--once` before leaving it running. It fails quietly in four ways:
+`--once` returns nonzero on a callback failure. Success marks notification complete only
+after the callback exits successfully. A crash between the external side effect and the
+commit can cause a retry, so callbacks must deduplicate by message ID. Completion records
+an exit status, not proof that a human or model read the message.
 
-1. **Reach.** It may continue the transcript in a new process rather than reach the
-   interactive session you are watching. Check the transcript, not the exit code.
-2. **Concurrency.** A resume landing mid-task may queue, drop or interleave.
-3. **Loops.** Do not wake on `received`.
-4. **Cost.** Every wake is a model turn.
+## Claude Code and Codex
 
-## Recommended
+Both providers work through the CLI without a provider API. Give multiple sessions distinct
+IDs; do not let separate instances share an inbox identity.
 
-| who | mechanism |
-|---|---|
-| Claude Code | `Monitor` on the other outbox, armed at session start |
-| Codex CLI | checkpoint `--inbox` reads |
-| You | `watch --interval 2` in a spare pane, one per `--from`; no wake semantics to get wrong |
+For Claude, import `AGENTS.md` from `CLAUDE.md`. A session-specific monitor may watch the
+terminal consumer output, but availability and re-arming depend on the installed Claude
+client. The framework does not assume a monitor is present or scrape JSON with regex.
 
-Add the Codex wake only after the above works. An unreliable wake is worse than a
-checkpoint you trust: it invites both agents to assume delivery.
+For Codex, use `AGENTS.md` and checkpoint inbox reads. The installed CLI's
+`codex exec resume --help` documents a non-interactive resume command, but launching it
+can create a separate process rather than wake the interactive UI. Do not assume safe
+concurrent access to an active conversation. No automatic model resume is enabled by
+this package, and no permission-bypass flags are supplied.
+
+An operator can implement a callback that calls the chosen provider, with explicit session
+routing, deduplication, a busy-session policy and a spending limit. Before enabling that
+integration, demonstrate a real `received` reply in the intended session, including during
+busy work and after restart. Automated tests validate the callback transport using local
+executables; they do not certify delivery inside live provider conversations.
