@@ -13,7 +13,9 @@ agent-collab watch --from codex-reviewer --consumer terminal --once
 
 The watcher queries a shared SQLite store, not JSONL files or filesystem events. It works
 across project worktrees. New subscriptions start at the beginning of retained routed
-history, so starting a watcher does not silently skip an existing message. Reads are
+history, so starting a watcher does not silently skip an existing message. A paid model
+callback can incur charges for each historical batch on first start; inspect the backlog
+and set a spending limit before enabling it. Reads are
 bounded to 100 candidate messages per poll. `--once` performs one bounded poll; if the
 first page contains only filtered messages, subsequent polls continue from that page.
 

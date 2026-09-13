@@ -79,9 +79,9 @@ def config(value):
         raise ValueError("configuration must be an object")
     if set(value) - {"agents", "provenance_files", "exclude", "max_messages"}:
         raise ValueError("unknown configuration key")
-    agents = value.get("agents", ["claude", "codex"])
-    if not isinstance(agents, list) or not 1 <= len(agents) <= MAX_AGENTS:
-        raise ValueError(f"configure between 1 and {MAX_AGENTS} agent instances")
+    agents = value.get("agents", [])
+    if not isinstance(agents, list) or not 0 <= len(agents) <= MAX_AGENTS:
+        raise ValueError(f"configure between 0 and {MAX_AGENTS} agent instances")
     if len({name(agent) for agent in agents}) != len(agents):
         raise ValueError("agent names must be unique")
     result = {"agents": agents}
@@ -95,6 +95,12 @@ def config(value):
         raise ValueError("max_messages must be between 1 and 1000000")
     result["max_messages"] = capacity
     return result
+
+
+def permission(value):
+    if not isinstance(value, str) or not value.strip() or len(value) > 2000:
+        raise ValueError("record the user's explicit permission/rejection (1-2000 characters)")
+    return value.strip()
 
 
 def envelope(message, settings, *, legacy=False):
@@ -167,16 +173,27 @@ def no_symlinks(path):
     return path
 
 
-def secure_directory(path):
+def secure_directory(path, *, create=True, read_only=False):
     if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
         raise RuntimeError("agent-collab 0.2 supports Linux/WSL POSIX filesystems only")
     path = no_symlinks(path)
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if create:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.stat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
         raise ValueError("state directory must be owned by the current user")
-    path.chmod(0o700)
+    if not read_only:
+        path.chmod(0o700)
+    owner_only(path.stat().st_mode)
     return path
+
+
+def owner_only(mode):
+    if stat.S_IMODE(mode) & 0o077:
+        raise ValueError(
+            "mailbox requires owner-only permissions; chmod did not establish them. "
+            "Use a local Linux filesystem; see MIGRATION.md for state relocation"
+        )
 
 
 def safe_write(root, relative_path, data, *, overwrite=False):

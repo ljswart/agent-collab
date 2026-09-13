@@ -9,6 +9,7 @@ import stat
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 from . import provenance as pv
 from . import safety
@@ -52,40 +53,92 @@ CREATE TABLE IF NOT EXISTS claims(
 CREATE TABLE IF NOT EXISTS audit(
  seq INTEGER PRIMARY KEY AUTOINCREMENT, created REAL NOT NULL,
  event TEXT NOT NULL, detail TEXT NOT NULL);
-PRAGMA user_version=2;
+PRAGMA user_version=3;
 COMMIT;
 """
 
 
+ADMISSION_SCHEMA = """CREATE TABLE IF NOT EXISTS admissions(
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ declaration TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+ agent TEXT UNIQUE, permission TEXT, created REAL NOT NULL)"""
+
+
 class Store:
-    def __init__(self, root):
+    def __init__(self, root, *, create=True, read_only=False):
         self.root = pv.find_root(root)
-        self.directory = safety.secure_directory(pv.common_dir(self.root) / "agent-collab")
+        self.read_only = read_only
+        common = pv.common_dir(self.root).resolve()
+        # Read only the shared local config, never global/worktree overrides.
+        configured = pv.git(
+            self.root, "config", "--file", str(common / "config"), "--null", "--list"
+        ).split(b"\0")
+        paths = [
+            v.split(b"\n", 1)[1]
+            for v in configured
+            if v.startswith(b"agent-collab.statedirectory\n")
+        ]
+        if len(paths) > 1:
+            raise ValueError("stateDirectory must have exactly one value")
+        directory = Path(os.fsdecode(paths[0])) if paths else common / "agent-collab"
+        if not directory.is_absolute():
+            raise ValueError("stateDirectory must be an absolute path")
+        if paths and (directory == self.root or self.root in directory.parents):
+            raise ValueError("configured stateDirectory must be outside the worktree")
+        if not create and not (directory / "mailbox.sqlite3").exists():
+            raise ValueError("mailbox is not initialized; run init")
+        self.directory = safety.secure_directory(directory, create=create, read_only=read_only)
         self.path = self.directory / "mailbox.sqlite3"
         for suffix in ("", "-journal", "-wal", "-shm"):
             safety.no_symlinks(str(self.path) + suffix)
-        fd = os.open(self.path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        flags = os.O_RDONLY if read_only else os.O_RDWR
+        if create and not read_only:
+            flags |= os.O_CREAT
+        fd = os.open(self.path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
                 raise ValueError(
                     "mailbox database must be a singly linked, owner-controlled regular file"
                 )
-            os.fchmod(fd, 0o600)
+            if not read_only:
+                os.fchmod(fd, 0o600)
+            safety.owner_only(os.fstat(fd).st_mode)
         finally:
             os.close(fd)
-        self.db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        self.db = sqlite3.connect(
+            self.path.as_uri() + ("?mode=ro" if read_only else "?mode=rw"),
+            uri=True,
+            timeout=30,
+            isolation_level=None,
+        )
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA trusted_schema=OFF")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version == 0:
+        if version == 0 and create and not read_only:
             # Rollback journal avoids depending on the host's SQLite WAL patch level.
             self.db.executescript(SCHEMA)
-        elif version != 2:
+        elif version == 2 and create and not read_only:
+            pass  # Only explicit init may upgrade the existing mailbox.
+        elif version == 2:
+            self.db.close()
+            raise ValueError("admission upgrade requires explicit init with existing configuration")
+        elif version != 3:
             self.db.close()
             raise ValueError(f"unsupported database schema {version}; no automatic downgrade")
+
+        # External state must be bound explicitly, never silently shared by clones.
+        repository = self.db.execute("SELECT value FROM meta WHERE key='repository'").fetchone()
+        if repository and repository[0] != str(common):
+            self.db.close()
+            raise ValueError("mailbox belongs to a different Git common directory")
+        if paths and not repository and not create:
+            self.db.close()
+            raise ValueError(
+                "external mailbox needs an explicit repository binding; see MIGRATION.md"
+            )
 
     def close(self):
         self.db.close()
@@ -113,9 +166,13 @@ class Store:
             raise ValueError("mailbox is not initialized; run init")
         return safety.config(safety.decode(row[0]))
 
-    def initialize(self, value):
+    def initialize(self, value, *, permission=None):
         settings = safety.config(value)
+        if permission is not None:
+            permission = safety.permission(permission)
         with self.transaction():
+            self.db.execute(ADMISSION_SCHEMA)
+            self.db.execute("PRAGMA user_version=3")
             old = self.db.execute("SELECT value FROM meta WHERE key='config'").fetchone()
             if old and safety.decode(old[0]) != settings:
                 raise ValueError("mailbox already initialized with different configuration")
@@ -123,13 +180,23 @@ class Store:
                 "INSERT OR IGNORE INTO meta VALUES('config',?)", (safety.encode(settings),)
             )
             self.db.execute("INSERT OR IGNORE INTO meta VALUES('project',?)", (uuid.uuid4().hex,))
+            self.db.execute(
+                "INSERT OR IGNORE INTO meta VALUES('repository',?)",
+                (str(pv.common_dir(self.root).resolve()),),
+            )
+            if permission is not None:
+                self._audit(
+                    "bootstrap_permission", {"permission": permission, "agents": settings["agents"]}
+                )
         return settings
 
     def configure(self, value):
         settings = safety.config(value)
         with self.transaction():
-            if not set(self.settings()["agents"]) <= set(settings["agents"]):
-                raise ValueError("configuration cannot remove agents with historical identities")
+            if set(self.settings()["agents"]) != set(settings["agents"]):
+                raise ValueError(
+                    "configuration cannot add or remove identities; use admission approval"
+                )
             if settings["max_messages"] < self.db.execute("SELECT count FROM stats").fetchone()[0]:
                 raise ValueError("capacity cannot be below the retained message count")
             self.db.execute(
@@ -140,18 +207,75 @@ class Store:
     def project_id(self):
         return self.db.execute("SELECT value FROM meta WHERE key='project'").fetchone()[0]
 
-    def register(self, agent):
-        safety.name(agent)
+    def register(self, _agent):
+        raise ValueError("direct registration is disabled; request-entry and await user approval")
+
+    def _admissions(self):
+        if not self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='admissions'"
+        ).fetchone():
+            raise ValueError("admission upgrade requires explicit init with existing configuration")
+
+    def request_entry(self, provider, display_name, purpose):
+        self._admissions()
+        declaration = {}
+        for key, value, limit in (
+            ("provider", provider, 80),
+            ("name", display_name, 120),
+            ("purpose", purpose, 2000),
+        ):
+            if not isinstance(value, str) or not value.strip() or len(value) > limit:
+                raise ValueError(
+                    f"declaration {key} must be nonempty text, at most {limit} characters"
+                )
+            declaration[key] = value.strip()
+        identifier = "request-" + uuid.uuid4().hex
         with self.transaction():
-            settings = self.settings()
-            if agent in settings["agents"]:
-                return
-            settings["agents"].append(agent)
-            settings = safety.config(settings)
+            total, pending = self.db.execute(
+                "SELECT COUNT(*),COALESCE(SUM(state='pending'),0) FROM admissions"
+            ).fetchone()
+            if total >= 10000 or pending >= 128:
+                raise ValueError("admission capacity reached (128 pending / 10000 total)")
             self.db.execute(
-                "UPDATE meta SET value=? WHERE key='config'", (safety.encode(settings),)
+                "INSERT INTO admissions(id,declaration,created) VALUES(?,?,?)",
+                (identifier, safety.encode(declaration), time.time()),
             )
-            self._audit("register", {"agent": agent})
+            self._audit("entry_requested", {"id": identifier, **declaration})
+        return {"id": identifier, "state": "pending", "declaration": declaration}
+
+    def entry_status(self, identifier):
+        self._admissions()
+        row = self.db.execute("SELECT * FROM admissions WHERE id=?", (identifier,)).fetchone()
+        if row is None:
+            raise ValueError("unknown admission request")
+        return {**dict(row), "declaration": safety.decode(row["declaration"])}
+
+    def decide_entry(self, identifier, permission, *, approve):
+        self._admissions()
+        permission = safety.permission(permission)
+        with self.transaction():
+            request = self.entry_status(identifier)
+            if request["state"] != "pending":
+                raise ValueError("admission request is already decided")
+            agent = None
+            if approve:
+                settings = self.settings()
+                agent = "agent-" + uuid.uuid4().hex
+                settings["agents"].append(agent)
+                settings = safety.config(settings)
+                self.db.execute(
+                    "UPDATE meta SET value=? WHERE key='config'", (safety.encode(settings),)
+                )
+            state = "approved" if approve else "denied"
+            self.db.execute(
+                "UPDATE admissions SET state=?,agent=?,permission=? WHERE id=?",
+                (state, agent, permission.strip(), identifier),
+            )
+            self._audit(
+                "entry_" + state,
+                {"id": identifier, "agent": agent, "permission": permission.strip()},
+            )
+        return self.entry_status(identifier)
 
     def _audit(self, event, detail):
         self.db.execute(
@@ -268,6 +392,10 @@ class Store:
                 message = safety.decode(row["payload"])
                 safety.envelope(message, settings, legacy=message.get("legacy") is True)
             except (ValueError, TypeError, KeyError, RecursionError) as exc:
+                if self.read_only:
+                    raise ValueError(
+                        f"invalid stored message at sequence {row['seq']}: {exc}"
+                    ) from exc
                 self.quarantine(str(row["seq"]), row["payload"].encode(), str(exc))
                 continue
             valid.append((row["seq"], message))
@@ -296,7 +424,7 @@ class Store:
         valid = self._rows(rows)
         invalid = {r["seq"] for r in rows} - {seq for seq, _ in valid}
         # Quarantined corruption must not hold the head of the unread queue forever.
-        if invalid:
+        if invalid and not all_messages:
             self.mark_read(agent, invalid)
         return valid
 
@@ -534,6 +662,7 @@ class Store:
 
     def release(self, agent, path):
         self._agent(agent)
+        path = safety.relative(path.rstrip("/"))
         with self.transaction():
             count = self.db.execute(
                 "DELETE FROM claims WHERE owner=? AND path=?", (agent, path)

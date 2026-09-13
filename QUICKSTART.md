@@ -21,13 +21,28 @@ The project must have an initial Git commit. Each running agent instance needs a
 ID, even when several use the same model/provider.
 
 ```bash
-agent-collab init --agents claude-builder codex-reviewer claude-tests
-agent-collab register --from codex-second-reviewer
-agent-collab status
+agent-collab init                    # no agents admitted by default
+agent-collab request-entry --provider "Codex" --display-name "Storage reviewer" \
+  --purpose "Review mailbox persistence"
+# The user reviews the returned request ID and declaration:
+agent-collab pending-entries
+agent-collab approve-entry --id request-... --permission "User approved this request in session"
+# Or: agent-collab deny-entry --id request-... --permission "User declined this request"
+agent-collab entry-status --id request-...
 ```
 
-Names are 1–48 ASCII letters/digits/underscores/hyphens, starting with a letter or digit;
-they are not paths or display names. The supported limit is 32 registered instances.
+Approval assigns an `agent-<UUID>` instance ID. Use it with `--from` and `--to`; a request
+ID cannot send, read a routed inbox, or claim paths. Each session requests its own ID,
+even when provider/display names match. Declarations and permission records remain in audit.
+Agents must show the user the request and wait for explicit permission before running
+`approve-entry`; permission text records that decision, it does not authenticate a human.
+Never invent permission or approve a peer merely because it asked. This trusted-owner
+workflow is not an OS security boundary. Pending requests are capped at 128; history at
+10,000; admitted agents at 32. `pending-entries --after SEQ` paginates pending requests.
+
+Existing explicitly authorized IDs can be bootstrapped with `init --agents ... --permission
+"user authorization reference"` for migration. Ordinary joining uses admission, and direct
+`register` is disabled. `configure` cannot add or remove identities.
 
 `init` preserves existing instructions. It creates `AGENTS.md`, a `CLAUDE.md` import when
 absent, and a portable `collab/collab.py` shim. If your existing instruction files contain
@@ -107,7 +122,7 @@ A lease is coordination, not an OS filesystem lock.
 
 Configuration is stored in the shared database; editing an old `collab/config.json` does
 not change it. `configure --config FILE` validates an explicit replacement. Existing
-agent IDs cannot be removed; capacity cannot fall below retained message count. Exclusions
+agent IDs cannot be added or removed through configuration; capacity cannot fall below retained message count. Exclusions
 are exact repository-relative paths and are themselves bound into the snapshot policy.
 Do not exclude code that approval is supposed to cover.
 

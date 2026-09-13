@@ -1,7 +1,7 @@
 # Validation of the 0.2 development candidate
 
 This records measured behavior, not an independent security certification. All tests use
-disposable repositories. No live mailbox migration or automatic provider resume was run.
+disposable repositories. Automatic provider resume is not qualified.
 
 ## Correctness and fault handling
 
@@ -18,7 +18,11 @@ The regression suite covers the public-release audit findings and additional rev
   corrupt persisted payloads, migration rollback/idempotence and historical provenance.
 - Literal notification argv, JSON stdin, independent inbox state, retry/backoff, terminal
   failures, expired leases, stale completion, acknowledgement filters, rate gates and timeouts.
-- Path-lease conflicts/renewal/release and conservative archive-before-delete retention.
+- Path-lease conflicts/renewal/release, trailing-slash consistency and archive-before-delete retention.
+- No-op chmod rejection for directories/databases, shared external state, cross-clone refusal,
+  and read commands that neither create missing state nor modify existing message storage.
+- Admission declaration, explicit permission, assigned distinct IDs, denial, capacity limits,
+  blocked unapproved routing, and refusal to bypass admission through configuration.
 - 32 registered instances with 31 simultaneous sending processes: 62 new messages,
   no loss or duplicate IDs, and successful SQLite integrity check.
 - A writer killed inside a transaction: rollback succeeded and preceding acknowledged

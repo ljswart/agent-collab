@@ -10,7 +10,10 @@ OS account, filesystem, Git credentials or model credentials.
 
 Any process running as the owner can modify the database or source, invoke the CLI using
 another registered identity, or commit directly. Message IDs are routing identifiers,
-not authenticated principals. Audit events, path leases and approval checks coordinate
+not authenticated principals. Admission requires a declaration and explicit user decision;
+the CLI records permission and assigns a unique ID. The permission string is an audit
+record, not proof of human identity: a same-owner process can call operator commands or
+edit storage. Agents must not self-approve. Audit events, path leases and approval checks coordinate
 cooperating participants; they are not tamper-proof or an authorization boundary over Git.
 
 For hostile-agent or multi-tenant deployments, use a separately designed broker and
@@ -29,7 +32,9 @@ signatures stored where all agents can read them do not provide that isolation.
   shell interpolation. Callback timeouts kill the process group; retries and failures are
   visible. Review callback code, since it runs with the owner's permissions.
 - State lives outside tracked project files under the Git common directory. The state
-  directory is owner-only; database creation and scaffold writes reject symlink targets.
+  directory and database must pass owner-only mode checks after chmod; unsupported
+  permission semantics fail closed. A shared Git config can place state on local Linux
+  storage outside a Windows-mounted worktree. Database/scaffold writes reject symlinks.
   Scaffold traversal uses directory descriptors and no-follow operations. These defenses
   do not promise protection against a hostile same-UID process racing filesystem changes.
 - Snapshots include file type/mode, symlink target and bytes, NUL-delimited filenames,
@@ -55,9 +60,10 @@ not automatically include the database; manually exported files can still be com
 ## Reporting and releases
 
 0.2 is a development alpha, not a completed independent security certification. Report
-exploitable findings privately to the maintainer at **ljswart@me.com**. Once GitHub private
-vulnerability reporting is enabled for the public repository, that is also an appropriate
-channel. Do not post exploit details in public issues before coordinated remediation.
+exploitable findings through the repository's GitHub **Security → Report a vulnerability**
+channel when enabled. If unavailable, ask the maintainer for a private reporting channel
+without including exploit details in a public issue. Enable private vulnerability reporting
+before public release.
 
 Security fixes target the latest 0.2 revision. The earlier JSONL/shell-template implementation
 is superseded and should not be advertised as secure. No automatic publication or upgrade

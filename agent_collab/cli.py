@@ -18,12 +18,16 @@ PROTOCOL = """# Agents working in this repository
 All agent instances use agent-collab 0.2. Run `agent-collab --version` before working.
 Protocol: https://github.com/ljswart/agent-collab (README.md and SECURITY.md).
 
+- Before joining, request-entry with provider, display-name and purpose. Wait for the user.
+- Never approve your own entry or another agent without explicit user permission for that request.
+- Use only the ID returned by approve-entry; each new instance requests its own admission.
 - Use your unique instance ID with `agent-collab --from ID --inbox` at checkpoints.
 - A file change does not wake Codex. Receipt requires an explicit `received` reply.
 - Send to explicit `--to` recipients; omission broadcasts to other registered agents.
 - Inspect evidence before running it; use isolated fixtures for reproductions.
 - Claim paths with `agent-collab claim-path --from ID --path PATH`; renew leases.
 - Use separate worktrees. Their mailboxes share the Git common directory automatically.
+- Review in your own checkout; never point approval --root at the proposer's worktree.
 - An approval names its proposal, full commit and snapshot. Verify `check-approval`
   immediately before integration on a fixed revision. Receipt is not approval.
 - Two agents agreeing is not evidence. Show findings, disputes and decisions to the user.
@@ -38,11 +42,11 @@ if __name__ == "__main__":
 '''
 
 
-def initialize(root, settings, force=False):
+def initialize(root, settings, force=False, *, permission=None):
     settings = safety.config(settings)  # before any writes, including state creation
     root = find_root(root)
     with Store(root) as store:
-        store.initialize(settings)
+        store.initialize(settings, permission=permission)
     safety.safe_write(root, "AGENTS.md", PROTOCOL, overwrite=force)
     safety.safe_write(root, "CLAUDE.md", "@AGENTS.md\n")
     safety.safe_write(root, "collab/collab.py", SHIM, overwrite=force)
@@ -67,6 +71,11 @@ def parser():
             "init",
             "status",
             "register",
+            "request-entry",
+            "entry-status",
+            "pending-entries",
+            "approve-entry",
+            "deny-entry",
             "configure",
             "watch",
             "activity",
@@ -82,7 +91,7 @@ def parser():
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument("--root")
     p.add_argument("--from", dest="agent", default=os.environ.get("COLLAB_AGENT"))
-    p.add_argument("--agents", nargs="+", default=["claude", "codex"])
+    p.add_argument("--agents", nargs="+", default=[])
     p.add_argument("--to", nargs="+")
     p.add_argument("--config", help="init: optional configuration JSON file")
     p.add_argument(
@@ -112,6 +121,8 @@ def parser():
     p.add_argument("--commit", help="approval: full reviewed commit")
     p.add_argument("--snapshot", help="approval: full reviewed snapshot SHA-256")
     p.add_argument("--id", help="check-approval: approval message ID")
+    for field in ("provider", "display-name", "purpose", "permission"):
+        p.add_argument("--" + field)
     p.add_argument("--consumer", default="watch")
     p.add_argument("--types", nargs="+", choices=safety.TYPES)
     p.add_argument("--interval", type=float, default=5)
@@ -144,11 +155,46 @@ def _execute(args):
         if args.config:
             with open(args.config, "rb") as handle:
                 settings = safety.decode(handle.read(safety.MAX_RECORD + 1))
-        initialize(args.root, settings, args.force)
+        if settings.get("agents") and not args.permission:
+            raise ValueError(
+                "bootstrap identities require --permission recording user authorization"
+            )
+        if args.permission is not None:
+            safety.permission(args.permission)
+        initialize(args.root, settings, args.force, permission=args.permission)
         return 0
-    with Store(args.root) as store:
+    read_only = args.command in (
+        "status",
+        "activity",
+        "export",
+        "check-approval",
+        "entry-status",
+        "pending-entries",
+    ) or (args.inbox and args.all)
+    with Store(args.root, create=False, read_only=read_only) as store:
         store.settings()
-        if args.command == "configure":
+        if args.command == "request-entry":
+            print(
+                safety.render(store.request_entry(args.provider, args.display_name, args.purpose))
+            )
+        elif args.command == "entry-status":
+            print(safety.render(store.entry_status(args.id)))
+        elif args.command == "pending-entries":
+            store._admissions()
+            for row in store.db.execute(
+                "SELECT id FROM admissions WHERE state='pending' AND seq>? ORDER BY seq LIMIT ?",
+                (args.after, args.limit),
+            ).fetchall():
+                print(safety.render(store.entry_status(row[0])))
+        elif args.command in ("approve-entry", "deny-entry"):
+            print(
+                safety.render(
+                    store.decide_entry(
+                        args.id, args.permission, approve=args.command == "approve-entry"
+                    )
+                )
+            )
+        elif args.command == "configure":
             if not args.config:
                 raise ValueError("configure requires --config")
             with open(args.config, "rb") as handle:

@@ -555,16 +555,19 @@ def test_import_capacity_failure_is_not_quarantined_as_bad_input(store, tmp_path
     assert store.status()["messages"] == 0
 
 
-def test_export_progresses_past_full_page_of_corrupt_records(store, capsys):
+def test_read_only_export_reports_corruption_without_mutating_store(store, capsys):
     seed = store.send("claude")
     with store.transaction():
         for index in range(100):
             store._insert({**seed, "id": f"invalid-{index}"})
         store.db.execute("UPDATE messages SET payload='null'")
-    last = store.send("claude")
+    store.send("claude")
+    before = store.path.read_bytes()
     capsys.readouterr()
-    assert main(["--root", str(store.root), "export"]) == 0
-    assert json.loads(capsys.readouterr().out)["id"] == last["id"]
+    assert main(["--root", str(store.root), "export"]) == 2
+    assert "invalid stored message" in capsys.readouterr().err
+    assert store.path.read_bytes() == before
+    assert store.status()["quarantined"] == 0
 
 
 def test_one_callback_batch_per_consumer_and_rate_gate(store):
@@ -608,7 +611,7 @@ def test_prune_does_not_delete_messages_awaiting_subscription_scan(store, tmp_pa
 def test_configure_cannot_remove_historical_identities(store):
     settings = store.settings()
     settings["agents"].remove("claude")
-    with pytest.raises(ValueError, match="cannot remove"):
+    with pytest.raises(ValueError, match="cannot add or remove"):
         store.configure(settings)
 
 
@@ -682,3 +685,211 @@ def test_approval_lookup_rejects_another_project_identity(store):
     )
     with pytest.raises(ValueError, match="different project"):
         store.get(message["id"])
+
+
+@pytest.mark.parametrize("command", ["status", "activity", "export", "entry-status"])
+def test_reads_do_not_initialize_missing_mailbox(tmp_path, command):
+    git_init(tmp_path)
+    assert main(["--root", str(tmp_path), command]) == 2
+    assert not (tmp_path / ".git/agent-collab").exists()
+
+
+def test_directory_chmod_noop_is_rejected(tmp_path, monkeypatch):
+    directory = tmp_path / "state"
+    directory.mkdir(mode=0o777)
+    directory.chmod(0o777)
+    monkeypatch.setattr(Path, "chmod", lambda *_a, **_k: None)
+    with pytest.raises(ValueError, match="owner-only"):
+        safety.secure_directory(directory)
+
+
+def test_database_chmod_noop_is_rejected(project, monkeypatch):
+    path = project / ".git/agent-collab/mailbox.sqlite3"
+    path.chmod(0o666)
+    monkeypatch.setattr(os, "fchmod", lambda *_a: None)
+    with pytest.raises(ValueError, match="owner-only"):
+        Store(project)
+
+
+def test_linux_state_permissions_and_read_only_operations(store):
+    import stat
+
+    assert stat.S_IMODE(store.directory.stat().st_mode) == 0o700
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
+    store.send("claude")
+    before = store.path.read_bytes()
+    for command in ("status", "activity", "export"):
+        assert main(["--root", str(store.root), command]) == 0
+    assert main(["--root", str(store.root), "--from", "codex", "--inbox", "--all"]) == 0
+    assert before == store.path.read_bytes()
+
+
+def test_release_normalizes_same_path_as_claim(store):
+    store.claim("codex", "tests///")
+    store.release("codex", "tests///")
+    assert store.status()["active_claims"] == []
+    with pytest.raises(ValueError, match="within"):
+        store.release("codex", "../tests/")
+
+
+def test_external_state_shared_across_worktrees_and_rejects_other_clone(tmp_path):
+    root = tmp_path / "repo"
+    git_init(root)
+    external = tmp_path / "state"
+    git(root, "config", "--local", "agent-collab.stateDirectory", str(external))
+    initialize(root, {"agents": ["claude", "codex"]})
+    assert not (root / ".git/agent-collab").exists()
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "instructions")
+    peer = tmp_path / "peer"
+    git(root, "worktree", "add", "--detach", str(peer))
+    with Store(root) as first, Store(peer) as second:
+        sent = first.send("claude")
+        assert second.inbox("codex")[0][1]["id"] == sent["id"]
+        assert first.path == second.path
+    unrelated = tmp_path / "unrelated"
+    git_init(unrelated)
+    git(unrelated, "config", "--local", "agent-collab.stateDirectory", str(external))
+    with pytest.raises(ValueError, match="different Git common"):
+        Store(unrelated)
+
+
+@pytest.mark.parametrize("path", ["relative", "inside"])
+def test_external_state_rejects_unsafe_location(tmp_path, path):
+    git_init(tmp_path)
+    value = path if path == "relative" else str(tmp_path / "state")
+    git(tmp_path, "config", "--local", "agent-collab.stateDirectory", value)
+    with pytest.raises(ValueError, match="stateDirectory"):
+        Store(tmp_path)
+    assert not (tmp_path / "state").exists()
+
+
+def test_unapproved_agent_cannot_send_read_or_claim(store):
+    request = store.request_entry("Claude Code", "Reviewer", "Review storage")
+    assert request["state"] == "pending"
+    for action in (
+        lambda: store.send(request["id"]),
+        lambda: store.inbox(request["id"]),
+        lambda: store.claim(request["id"], "tests"),
+        lambda: store.register("new-agent"),
+    ):
+        with pytest.raises(ValueError, match="unknown agent|registration is disabled"):
+            action()
+    assert store.status()["messages"] == 0
+
+
+def test_admission_requires_permission_and_assigns_distinct_ids(store):
+    first = store.request_entry("Codex", "Reviewer", "Review")
+    second = store.request_entry("Codex", "Reviewer", "Review")
+    with pytest.raises(ValueError, match="permission"):
+        store.decide_entry(first["id"], "", approve=True)
+    approved = store.decide_entry(first["id"], "User approved request in session", approve=True)
+    other = store.decide_entry(second["id"], "User approved second request", approve=True)
+    assert approved["agent"] != other["agent"]
+    assert approved["declaration"]["provider"] == "Codex"
+    assert approved["agent"].startswith("agent-")
+    store.send(approved["agent"], to=["codex"])
+    assert store.inbox("codex")
+    with pytest.raises(ValueError, match="already decided"):
+        store.decide_entry(first["id"], "Again", approve=True)
+
+
+def test_denied_request_cannot_be_approved(store):
+    request = store.request_entry("Claude", "Builder", "Build")
+    denied = store.decide_entry(request["id"], "User declined", approve=False)
+    assert denied["agent"] is None
+    with pytest.raises(ValueError, match="already decided"):
+        store.decide_entry(request["id"], "Retry", approve=True)
+
+
+def test_configuration_cannot_bypass_admission(store):
+    settings = store.settings()
+    settings["agents"].append("unapproved")
+    with pytest.raises(ValueError, match="admission"):
+        store.configure(settings)
+    assert "unapproved" not in store.settings()["agents"]
+
+
+def test_pending_admission_capacity_and_missing_declaration(store):
+    with pytest.raises(ValueError, match="provider"):
+        store.request_entry("", "A", "B")
+    for _ in range(128):
+        store.request_entry("Codex", "A", "B")
+    with pytest.raises(ValueError, match="capacity"):
+        store.request_entry("Codex", "A", "B")
+
+
+def test_admission_at_agent_limit_rolls_back(store):
+    for i in range(29):
+        request = store.request_entry("Codex", str(i), "Test")
+        store.decide_entry(request["id"], "Fixture approval", approve=True)
+    request = store.request_entry("Codex", "Overflow", "Test")
+    with pytest.raises(ValueError, match="32"):
+        store.decide_entry(request["id"], "Fixture approval", approve=True)
+    assert store.entry_status(request["id"])["state"] == "pending"
+    assert len(store.settings()["agents"]) == 32
+
+
+def test_cli_default_init_admits_nobody_and_complete_admission(tmp_path, capsys):
+    git_init(tmp_path)
+    assert main(["--root", str(tmp_path), "init"]) == 0
+    with Store(tmp_path) as store:
+        assert store.settings()["agents"] == []
+    capsys.readouterr()
+    base = ["--root", str(tmp_path)]
+    assert (
+        main(
+            base
+            + [
+                "request-entry",
+                "--provider",
+                "Codex",
+                "--display-name",
+                "Reviewer",
+                "--purpose",
+                "Review",
+            ]
+        )
+        == 0
+    )
+    request = json.loads(capsys.readouterr().out)
+    assert main(base + ["approve-entry", "--id", request["id"]]) == 2
+    capsys.readouterr()
+    assert (
+        main(
+            base
+            + [
+                "approve-entry",
+                "--id",
+                request["id"],
+                "--permission",
+                "User explicitly approved this fixture request",
+            ]
+        )
+        == 0
+    )
+    admitted = json.loads(capsys.readouterr().out)
+    assert admitted["state"] == "approved"
+    assert main(base + ["entry-status", "--id", request["id"]]) == 0
+
+
+def test_cli_bootstrap_requires_explicit_user_permission(tmp_path):
+    git_init(tmp_path)
+    assert main(["--root", str(tmp_path), "init", "--agents", "codex"]) == 2
+    assert not (tmp_path / ".git/agent-collab").exists()
+
+
+def test_old_store_requires_explicit_upgrade_preserving_identity_and_messages(store):
+    sent = store.send("claude")
+    project = store.project_id()
+    settings = store.settings()
+    store.db.execute("DROP TABLE admissions")
+    store.db.execute("PRAGMA user_version=2")
+    with pytest.raises(ValueError, match="explicit init"):
+        Store(store.root, create=False)
+    initialize(store.root, settings)
+    with Store(store.root, create=False) as updated:
+        assert updated.project_id() == project
+        assert updated.get(sent["id"]) == sent
+        assert updated.db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert updated.request_entry("Codex", "Reviewer", "Review")["state"] == "pending"

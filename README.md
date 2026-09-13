@@ -4,13 +4,16 @@ A durable, local evidence exchange for cooperating coding agents. Give each inst
 its own ID, point it at the project's `AGENTS.md`, and use the same CLI from Claude Code,
 Codex, or another agent that can run commands. Multiple instances of one provider work too.
 
-Version 0.2 is an alpha for **1–32 registered instances on one Linux/WSL host**, under
+Version 0.2 is an alpha for **up to 32 admitted instances on one Linux/WSL host**, under
 one trusted OS owner. It is not an isolation boundary between malicious processes.
 Read [SECURITY.md](SECURITY.md) before choosing a deployment model.
 
 ```bash
 # In a Git project with an initial commit, after installing the package:
-agent-collab init --agents claude-builder codex-reviewer claude-tests
+agent-collab init
+agent-collab request-entry --provider "Claude Code" --display-name "Builder" --purpose "Implement"
+# The user approves the returned request; see Quickstart for the complete admission flow.
+# Use the assigned IDs below in place of these illustrative names.
 
 agent-collab --from claude-builder --to codex-reviewer claude-tests \
   --type finding --claim 'A reproducible failure' --evidence 'pytest -q tests/test_example.py'
@@ -29,7 +32,9 @@ agent-collab --from codex-reviewer --type received --replies-to <message-id>
 ## What the framework does
 
 SQLite transactions persist messages, recipient delivery state, notification jobs and
-ownership leases in `<git-common-dir>/agent-collab/`. Separate Git worktrees automatically
+ownership leases in `<git-common-dir>/agent-collab/` by default. A shared local Git setting,
+`agent-collab.stateDirectory`, can select an absolute directory on a local Linux filesystem
+outside the worktree; see [MIGRATION.md](MIGRATION.md) before moving existing state. Separate Git worktrees automatically
 share that store while each sender fingerprints its own worktree. No daemon, server,
 network listener, model API key, or runtime Python dependency is required.
 
@@ -49,6 +54,11 @@ to 64 KiB and reads to 100 records per page. The default retained-message capaci
 
 ## The protocol
 
+An instance must declare its provider, display name and purpose with `request-entry` and
+wait for explicit user permission. Approval assigns its ID. Agents must not self-approve
+or approve peers without the user's decision for that request. See the admission workflow
+in [QUICKSTART.md](QUICKSTART.md); permission records are visible in the audit.
+
 1. **Evidence before agreement.** Findings and claims need evidence. Inspect commands
    before running them; never execute an evidence field automatically. Reproduce in a
    disposable repository. Record actual output and uncertainty.
@@ -57,7 +67,9 @@ to 64 KiB and reads to 100 records per page. The default retained-message capaci
    proposal under the cooperating-agent protocol. Reading an inbox is not a receipt reply.
 3. **Approvals identify the reviewed subject.** An approval requires an existing proposal,
    its full commit and snapshot, and a matching current worktree. Run `check-approval`
-   immediately before integration on a fixed revision. It rejects stale approvals. This
+   immediately before integration on a fixed revision. Review in your own checkout: `--root`
+   selects the tree fingerprinted, so pointing at the proposer's tree is not an independent
+   checkout check. It rejects stale approvals. This
    tool does not intercept arbitrary `git commit` commands or hold integration credentials.
 4. **Own paths explicitly.** `claim-path` atomically acquires a lease and rejects overlapping
    claims by other agents. Renew during long work; release when done. Discuss handoffs in
@@ -75,6 +87,25 @@ submodule state and named provenance inputs. Git paths use NUL delimiters. Two p
 reject observable worktree mutation; review immutable revisions for integration. This
 is not an atomic snapshot against an adversary racing file changes. Missing declared
 provenance inputs fail closed. Full relative input paths avoid basename collisions.
+
+## Things that went wrong
+
+These were observed failures; the last column describes the current rule or implementation.
+
+| What happened | Response |
+|---|---|
+| Fingerprints missed new-file contents, unusual names or executable bits | Hash bytes and types; use NUL-delimited Git paths |
+| Sending changed the reviewed snapshot | Keep mailbox state outside tracked files |
+| Concurrent senders reused IDs; torn appends damaged following records | UUID IDs and transactional SQLite |
+| One malformed record hid valid traffic | Validate bounded records; inbox quarantines corruption; read-only exports fail visibly |
+| Tests wrote to a peer's outbox or restored a live mailbox | Reproduce only in disposable repositories |
+| `--force` was parsed but never forwarded | Exercise CLI flags end to end |
+| A watcher consumed the agent's unread queue | Separate delivery and notification state |
+| A monitor regex missed 16 of 22 records because key order differed | Parse JSON |
+| Shell templates interpolated untrusted identifiers | Literal argv and JSON stdin; no shell templates |
+| `chmod` silently left the live Windows-mounted store at 777 | Recheck directory/file modes; keep state on Linux storage |
+| An approval fingerprinted the proposer's worktree | Reviewer uses their own checkout at the proposed revision |
+| Two reviewer sessions shared one identity and duplicated findings | Each instance declares itself, obtains user approval and receives a unique ID |
 
 ## See the communication
 
