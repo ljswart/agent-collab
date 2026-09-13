@@ -134,9 +134,7 @@ def reviewed_snapshot(root, config):
     paths = set()
     paths.update(p for p in _git(root, "diff", "--name-only", "HEAD").splitlines() if p)
     paths.update(
-        p
-        for p in _git(root, "ls-files", "--others", "--exclude-standard").splitlines()
-        if p
+        p for p in _git(root, "ls-files", "--others", "--exclude-standard").splitlines() if p
     )
     reviewed = sorted(p for p in paths if not _is_runtime_state(p, config))
     digest = hashlib.sha256()
@@ -319,9 +317,7 @@ def watch(
     seen = (
         0
         if from_start
-        else (
-            int(cursor.read_text().strip()) if cursor.exists() else len(read_all(path))
-        )
+        else (int(cursor.read_text().strip()) if cursor.exists() else len(read_all(path)))
     )
     print(
         f"watching {path.name} for {watcher} (from record {seen}, every {interval}s)",
@@ -430,17 +426,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "command", nargs="?", choices=("init", "status", "watch"), default=None
-    )
+    parser.add_argument("command", nargs="?", choices=("init", "status", "watch"), default=None)
     parser.add_argument("--root", help="project root (default: git top level of cwd)")
     parser.add_argument("--from", dest="agent", default=os.environ.get("COLLAB_AGENT"))
-    parser.add_argument(
-        "--agents", nargs=2, metavar=("A", "B"), default=list(DEFAULT_AGENTS)
-    )
-    parser.add_argument(
-        "--force", action="store_true", help="init: overwrite existing files"
-    )
+    parser.add_argument("--agents", nargs=2, metavar=("A", "B"), default=list(DEFAULT_AGENTS))
+    parser.add_argument("--force", action="store_true", help="init: overwrite existing files")
     parser.add_argument("--inbox", action="store_true")
     parser.add_argument("--all", action="store_true", help="with --inbox, show history")
     parser.add_argument("--type", choices=TYPES)
@@ -450,27 +440,17 @@ def main(argv=None):
     parser.add_argument("--expect")
     parser.add_argument("--evidence")
     parser.add_argument("--evidence-file")
-    parser.add_argument(
-        "--evidence-kind", choices=("command", "citation"), default="command"
-    )
+    parser.add_argument("--evidence-kind", choices=("command", "citation"), default="command")
     parser.add_argument("--replies-to")
-    parser.add_argument(
-        "--task", help="task id, for independent threads under one agent"
-    )
-    parser.add_argument(
-        "--status", choices=("open", "fixed", "withdrawn"), default="open"
-    )
-    parser.add_argument(
-        "--interval", type=float, default=5.0, help="watch: poll seconds"
-    )
+    parser.add_argument("--task", help="task id, for independent threads under one agent")
+    parser.add_argument("--status", choices=("open", "fixed", "withdrawn"), default="open")
+    parser.add_argument("--interval", type=float, default=5.0, help="watch: poll seconds")
     parser.add_argument(
         "--exec",
         dest="exec_cmd",
         help="watch: shell command per new batch; {ids} {count} {agent}",
     )
-    parser.add_argument(
-        "--once", action="store_true", help="watch: exit after one batch"
-    )
+    parser.add_argument("--once", action="store_true", help="watch: exit after one batch")
     parser.add_argument(
         "--from-start",
         action="store_true",
@@ -488,9 +468,7 @@ def main(argv=None):
         print(f"root:    {root}")
         print(f"agents:  {', '.join(config['agents'])}")
         for agent in config["agents"]:
-            print(
-                f"  {agent}.outbox.jsonl: {len(read_all(outbox(root, agent)))} message(s)"
-            )
+            print(f"  {agent}.outbox.jsonl: {len(read_all(outbox(root, agent)))} message(s)")
         prov = provenance(root, config)
         print(
             f"commit {prov['commit']}  snapshot {prov['snapshot_sha256']}  "

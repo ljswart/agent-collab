@@ -1,14 +1,41 @@
-# Agent collaboration protocol
+# agent-collab
 
-A shared mailbox for two coding agents working in the same repository — typically
-**Claude Code** and **Codex CLI** — which have no direct channel to each other.
+A shared mailbox for two coding agents working in the same repository.
 
-The purpose is an **evidence exchange**, not a chat. A message asserting something
-without a way to check it is worth little; a message carrying a reproduction is worth
-acting on. The protocol exists to keep that distinction sharp under time pressure.
+Claude Code and Codex CLI can both edit the same working tree, but they cannot talk to
+each other. Left alone they overwrite each other's edits, re-review work that already
+moved on, and agree on things neither has checked. This gives them a channel with enough
+structure to be useful: append-only outboxes, content-addressed provenance, and a
+vocabulary that keeps *"I read your message"* apart from *"I approve this revision"*.
 
-Setup: **[QUICKSTART.md](QUICKSTART.md)**. Drop `templates/AGENTS.md` into a project and
-both agents will find their way here.
+It is an **evidence exchange**, not a chat. A message asserting something without a way
+to check it is worth little; a message carrying a reproduction is worth acting on.
+
+```bash
+# in any git repository
+python /path/to/agent-collab/collab.py init
+
+# agent A reports something, with a way to verify it
+python collab/collab.py --from claude --type finding --severity P1 \
+  --ref src/sizing.py:151 \
+  --claim "position size reads a price that is not yet observable" \
+  --evidence-file /tmp/repro.py --expect "P&L differs: 1005.20 vs 1188.71"
+
+# agent B sees it, checks it, and answers
+python collab/collab.py --from codex --inbox
+python collab/collab.py --from codex --type reproduced --replies-to claude-0001 \
+  --status fixed --claim "reproduced and fixed" --evidence "pytest -q" --expect "8 passed"
+```
+
+**Requirements:** Python 3.11+ and `git`. No dependencies — `collab.py` is one file using
+only the standard library. `pytest` is needed only to run the tests.
+
+Every rule below exists because something went wrong without it; the
+[list of those failures](#things-that-went-wrong) is at the end and is the most useful
+part of this README.
+
+- **[QUICKSTART.md](QUICKSTART.md)** — setup, daily commands, configuration
+- **[NOTIFICATIONS.md](NOTIFICATIONS.md)** — how each agent finds out mail has arrived
 
 ---
 
@@ -171,7 +198,9 @@ a message and simultaneously hide it from `--inbox`.
 
 ---
 
-## Things that went wrong the first time
+<a name="things-that-went-wrong"></a>
+
+## Things that went wrong
 
 Kept because the protocol is mostly a record of these:
 
@@ -191,3 +220,30 @@ The last few are worth stating plainly: an agent testing its own tooling wrote j
 the channel its counterpart owned, then wrote tests that mutated the live mailbox and
 "restored" it. Redirect the mailbox root in tests; never exercise against the real one;
 and verify that claim with a hash check rather than trusting the cleanup code.
+
+---
+
+## Security
+
+Two things in this design deliberately execute or trust outside input. Both are safe only
+because the protocol says how to handle them:
+
+- **`evidence` fields carry commands written by another agent.** Rule 4 exists for this:
+  read them before running them, never pipe them to a shell unseen. The tool never
+  executes an evidence field itself.
+- **`watch --exec` runs a shell command** you supply when mail arrives. It is your own
+  command, but the substituted `{ids}` come from the other agent's outbox, so do not
+  interpolate them anywhere a shell would re-parse them as code.
+
+Mailbox files are plain text in your repository. Do not put credentials, tokens or
+customer data in a message; treat the mailbox as something that may end up in git history.
+
+## Scope
+
+This is a small, deliberately boring tool. It does not try to be a message broker, a task
+queue, or an agent framework. Two agents, one repository, append-only files, and a set of
+rules that were each paid for. If you need more than that, this is the wrong thing.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

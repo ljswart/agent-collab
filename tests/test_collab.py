@@ -20,9 +20,7 @@ import collab  # noqa: E402
 def project(tmp_path):
     """A real git repo with an initialised mailbox."""
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True
-    )
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True)
     (tmp_path / "seed.txt").write_text("seed\n")
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
@@ -98,13 +96,10 @@ def test_provenance_files_are_hashed(project):
 
 def test_ids_are_allocated_under_the_append_lock(project):
     config = collab.load_config(project)
-    ids = [
-        collab.append(project, "codex", record("codex"), config)["id"] for _ in range(3)
-    ]
+    ids = [collab.append(project, "codex", record("codex"), config)["id"] for _ in range(3)]
     assert len(set(ids)) == 3, ids
     written = [
-        json.loads(line)["id"]
-        for line in collab.outbox(project, "codex").read_text().splitlines()
+        json.loads(line)["id"] for line in collab.outbox(project, "codex").read_text().splitlines()
     ]
     assert written == ids
 
@@ -166,29 +161,20 @@ def test_watch_does_not_consume_the_agents_unread_queue(project, capsys):
     config = collab.load_config(project)
     collab.append(project, "codex", record("codex"), config)
 
-    fresh = collab.watch(
-        project, config, "claude", interval=0.01, once=True, from_start=True
-    )
+    fresh = collab.watch(project, config, "claude", interval=0.01, once=True, from_start=True)
     assert len(fresh) == 1
     assert (collab.mailbox(project) / ".watch.claude.cursor").exists()
     assert not (collab.mailbox(project) / ".claude.cursor").exists()
 
     capsys.readouterr()
-    assert len(collab.show_inbox(project, "claude", config)) == 1, (
-        "inbox must still deliver it"
-    )
+    assert len(collab.show_inbox(project, "claude", config)) == 1, "inbox must still deliver it"
 
 
 def test_watch_reports_only_new_records(project, capsys):
     config = collab.load_config(project)
     collab.append(project, "codex", record("codex"), config)
     assert (
-        len(
-            collab.watch(
-                project, config, "claude", interval=0.01, once=True, from_start=True
-            )
-        )
-        == 1
+        len(collab.watch(project, config, "claude", interval=0.01, once=True, from_start=True)) == 1
     )
     assert collab.watch(project, config, "claude", interval=0.01, once=True) == []
     collab.append(project, "codex", record("codex"), config)
@@ -217,9 +203,7 @@ def test_watch_defers_an_incomplete_tail(project, capsys):
     collab.append(project, "codex", record("codex"), config)
     box = collab.outbox(project, "codex")
     box.write_text(box.read_text() + '{"id":"codex-000')
-    fresh = collab.watch(
-        project, config, "claude", interval=0.01, once=True, from_start=True
-    )
+    fresh = collab.watch(project, config, "claude", interval=0.01, once=True, from_start=True)
     assert len(fresh) == 1, "only the complete record is announced"
 
 
@@ -261,9 +245,7 @@ def test_force_actually_overwrites(project):
 
 
 def test_config_requires_exactly_two_agents(project):
-    (collab.mailbox(project) / "config.json").write_text(
-        json.dumps({"agents": ["solo"]})
-    )
+    (collab.mailbox(project) / "config.json").write_text(json.dumps({"agents": ["solo"]}))
     with pytest.raises(ValueError, match="exactly two agents"):
         collab.load_config(project)
 
@@ -286,7 +268,8 @@ def test_end_to_end_round_trip(project, capsys):
     )
     assert collab.main(["--root", str(project), "--from", "codex", "--inbox"]) == 0
     out = capsys.readouterr().out
-    assert "PING" in out and "hello" in out
+    assert "PING" in out
+    assert "hello" in out
     assert (
         collab.main(
             [

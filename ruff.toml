@@ -1,0 +1,15 @@
+# Pinned so `ruff check .` in CI means the same thing as locally.
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PT", "RET", "ARG", "PERF", "S"]
+ignore = [
+    "S101",  # asserts are how the tests express their guards
+]
+
+[lint.per-file-ignores]
+"tests/*" = [
+    "S603", "S607",  # tests shell out to git to build throwaway repositories
+    "ARG001",        # pytest fixtures are declared as parameters by design
+]
