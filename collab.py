@@ -303,7 +303,7 @@ def _substitute(command, fresh, other):
     replaced outright.
     """
     ids = ",".join(
-        (i if SAFE_ID.match(i := str(m.get("id", ""))) else "<malformed-id>") for m in fresh
+        (i if SAFE_ID.match(i := str(m.get("id", ""))) else "malformed-id") for m in fresh
     )
     return (
         command.replace("{ids}", shlex.quote(ids))
@@ -523,6 +523,11 @@ def main(argv=None):
         evidence = Path(args.evidence_file).read_text()
     if args.type in ("finding", "claim") and not evidence:
         parser.error("a finding or claim needs --evidence or --evidence-file")
+    if args.type == "approved" and not args.replies_to:
+        # An approval authorises integration of one proposed revision. Without a
+        # target it approves "whatever is current", which is exactly the drift rule 8
+        # exists to prevent.
+        parser.error("approved must name the message it approves (--replies-to)")
 
     message = {
         "id": None,  # assigned under the mailbox lock

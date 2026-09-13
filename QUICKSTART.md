@@ -14,13 +14,8 @@ python /path/to/agent-collab/collab.py init --agents alice bob
 regenerates them from `templates/`. The shim `collab/collab.py`, `collab/README.md` and
 `AGENTS.md` embed the absolute path of your clone, so committing them publishes that path.
 
-Mailbox traffic can be kept out of git; the reviewed snapshot excludes it either way:
-
-```gitignore
-collab/*.outbox.jsonl
-collab/.lock
-collab/.*.cursor
-```
+`init` prints the `.gitignore` lines that keep mailbox traffic out of history. Optional:
+the reviewed snapshot excludes that traffic either way.
 
 ## Point the agents at the protocol
 
@@ -50,7 +45,7 @@ python collab/collab.py [init|status|watch] [--from AGENT] [flags]
 | `--severity P1/P2/P3` `--ref PATH:LINE` `--claim` `--expect` | message fields |
 | `--evidence CMD` / `--evidence-file PATH` | required for `finding` and `claim` |
 | `--evidence-kind command/citation` | default `command` |
-| `--replies-to ID` `--task ID` | threading |
+| `--replies-to ID` `--task ID` | threading; `--replies-to` is required for `approved` |
 | `--status open/fixed/withdrawn` | default `open` |
 | `status` | message counts and current provenance |
 | `watch` | `--interval S` `--exec CMD` `--once` `--from-start`; see [NOTIFICATIONS.md](NOTIFICATIONS.md) |
@@ -72,5 +67,5 @@ Message examples: [README.md](README.md).
 ## Tests
 
 ```bash
-python -m pytest /path/to/agent-collab/tests -q     # 21 tests; temporary repos only
+python -m pytest /path/to/agent-collab/tests -q     # temporary repos only; never a live mailbox
 ```

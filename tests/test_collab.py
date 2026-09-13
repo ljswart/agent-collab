@@ -261,8 +261,19 @@ def test_malformed_ids_are_replaced_not_passed_on():
     fresh = [{"id": "codex-0001"}, {"id": "x; rm -rf /"}, {"id": None}]
     filled = collab._substitute("run {ids}", fresh, "codex")
     assert "rm -rf" not in filled
-    assert "<malformed-id>" in filled
+    assert "malformed-id" in filled
     assert "codex-0001" in filled
+
+
+def test_malformed_id_token_is_shell_safe():
+    """The replacement must not carry metacharacters of its own.
+
+    An earlier token was "<malformed-id>"; inside a template's own quotes the shell
+    read the angle brackets as redirections.
+    """
+    filled = collab._substitute("echo '{ids}'", [{"id": "bad;id"}], "codex")
+    assert "<" not in filled
+    assert ">" not in filled
 
 
 def test_watch_defers_an_incomplete_tail(project, capsys):
@@ -316,6 +327,15 @@ def test_config_requires_exactly_two_agents(project):
     (collab.mailbox(project) / "config.json").write_text(json.dumps({"agents": ["solo"]}))
     with pytest.raises(ValueError, match="exactly two agents"):
         collab.load_config(project)
+
+
+def test_approved_must_name_a_message(project):
+    """An approval with no target approves 'whatever is current'; rule 8 forbids that."""
+    base = ["--root", str(project), "--from", "claude", "--type", "approved", "--claim", "ok"]
+    with pytest.raises(SystemExit):
+        collab.main(base)
+    assert collab.read_all(collab.outbox(project, "claude")) == []
+    assert collab.main([*base, "--replies-to", "codex-0001"]) == 0
 
 
 def test_end_to_end_round_trip(project, capsys):

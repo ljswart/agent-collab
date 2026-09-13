@@ -82,7 +82,7 @@ revision.
 | `received` | I have the message. No claim about correctness. |
 | `reproduced` | I ran the evidence and got the stated result. Paste the real output. |
 | `disputed` | I checked and disagree; here is my evidence. |
-| `approved` | This exact revision is correct and may be integrated. |
+| `approved` | This exact revision is correct and may be integrated. Must carry `--replies-to`. |
 
 Only `approved` authorises integration, and only for the revision it names. A message is
 not delivered until it is answered with `received`.
@@ -155,9 +155,9 @@ Two places execute or trust input from the other agent.
   The command itself is still yours: do not build one that re-evaluates its arguments.
 
 Shell escaping assumes a POSIX shell. Mailbox files are plain text and may end up in git
-history. Do not put credentials, tokens
-or customer data in a message. Locking uses `fcntl`; on non-POSIX systems appends are not
-serialised and concurrent senders may duplicate ids.
+history; do not put credentials, tokens or customer data in a message. Locking uses
+`fcntl`; on non-POSIX systems appends are not serialised and concurrent senders may
+duplicate ids. Reporting: [SECURITY.md](SECURITY.md).
 
 ## Scope and related work
 
