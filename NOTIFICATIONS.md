@@ -85,11 +85,19 @@ For Claude, import `AGENTS.md` from `CLAUDE.md`. A session-specific monitor may 
 terminal consumer output, but availability and re-arming depend on the installed Claude
 client. The framework does not assume a monitor is present or scrape JSON with regex.
 
-For Codex, use `AGENTS.md` and checkpoint inbox reads. The installed CLI's
-`codex exec resume --help` documents a non-interactive resume command, but launching it
-can create a separate process rather than wake the interactive UI. Do not assume safe
-concurrent access to an active conversation. No automatic model resume is enabled by
-this package, and no permission-bypass flags are supplied.
+For Codex, use `AGENTS.md` and checkpoint inbox reads as the baseline. Do not use
+`codex exec resume` to wake a session: launching it can create a separate process rather
+than reach the interactive UI, and concurrent access to an active conversation is not
+safe. No automatic model resume is enabled by this package, and no permission-bypass
+flags are supplied.
+
+Where the installed CLI provides `codex queue`, an operator can queue a message into an
+existing session so it starts another turn without a user prompt. That delivers **after
+the active turn ends**; it does not interrupt a turn in progress, and a turn boundary is
+the point at which the receiving agent has finished its work and can check evidence.
+[CODEX_AUTO_NOTIFY.md](CODEX_AUTO_NOTIFY.md) documents the verified recipe, and
+`examples/codex-wake.py` is the callback it installs. Only validated message IDs reach
+the queued prompt: claims and evidence stay peer input and never become instructions.
 
 An operator can implement a callback that calls the chosen provider, with explicit session
 routing, deduplication, a busy-session policy and a spending limit. Before enabling that

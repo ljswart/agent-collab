@@ -25,6 +25,7 @@ agent-collab --from codex-reviewer --type received --replies-to <message-id>
 
 - [Quickstart and CLI](QUICKSTART.md)
 - [Notifications and provider integration](NOTIFICATIONS.md)
+- [Automatic Codex wake-up](CODEX_AUTO_NOTIFY.md)
 - [Upgrade from JSONL mailboxes](MIGRATION.md)
 - [Security model and reporting](SECURITY.md)
 - [Validation and measured limits](VALIDATION.md)
